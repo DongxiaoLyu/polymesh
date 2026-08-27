@@ -43,22 +43,13 @@ no build step required.
 
 ## Output format
 
-- **Y-UP coordinates** (screen Y flipped), uniformly scaled and centered into a
+- **Coordinates**, uniformly scaled and centered into a
   **100 × 100** box, aspect ratio preserved
 - **Elements are counter-clockwise** (positive Jacobian)
 - Sections: `# NODES`, `# ELEMENTS`, `# POINT LOADS`, `# DISTRIBUTED LOADS`,
   `# SUPPORTS`; all node/edge ids are 1-based
 - Loads/supports use a group-block layout: a header line with the name (+ type) and
   member count, one line per member, then the vector line (loads only)
-
-## Development
-
-```
-node smoke-test.js   # behavior cross-check + image pipeline + export checks
-node dom-smoke.js    # DOM wiring check
-```
-
-See `DEVELOPMENT.md` for the code structure (in Chinese).
 
 ## License
 
