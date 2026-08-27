@@ -1,0 +1,899 @@
+/* ============================================================
+   app.js — The controller: state, DOM, interaction, pipeline
+   ============================================================
+   This is the ONLY file that touches the DOM and the `state`
+   object. It coordinates the pure modules loaded before it:
+
+     Constants — tuning parameters & colors
+     Geometry  — vector math & geometric predicates
+     Grid      — grid generation & snapping
+     Clipping  — cell clipping
+     Mesh      — mesh construction
+     Renderer  — canvas drawing
+     Export    — TXT output
+     Demo      — sample polygon data
+
+   Read order: state -> pipeline -> interaction -> wiring -> init.
+   ============================================================ */
+
+(function (global) {
+  'use strict';
+
+  /* ---------- Module aliases (short local names) ---------- */
+  const Constants = global.MeshStudio.Constants;
+  const G = global.MeshStudio.Geometry;          // Geometry
+  const V = G.V;                                 // vector helpers
+  const Grid = global.MeshStudio.Grid;           // Grid
+  const Mesh = global.MeshStudio.Mesh;           // Mesh
+  const Renderer = global.MeshStudio.Renderer;   // Renderer
+  const Export = global.MeshStudio.Export;       // Export
+  const Demo = global.MeshStudio.Demo;           // Demo
+  const ImageProc = global.MeshStudio.Image;     // Image (bitmap → contour)
+
+  const FREEHAND_MIN_DIST = Constants.FREEHAND_MIN_DIST;
+  const FREEHAND_EPSILON  = Constants.FREEHAND_EPSILON;
+  const MIN_POLYGON_AREA  = Constants.MIN_POLYGON_AREA;
+
+  /* ============================================================
+     1. DOM references
+     ============================================================ */
+  const canvas      = document.getElementById('canvas');
+  const ctx         = canvas.getContext('2d');
+  const stage       = document.getElementById('stage');
+  const segButtons  = Array.from(document.querySelectorAll('#gridTypeSeg .seg'));
+  const drawModeButtons = Array.from(document.querySelectorAll('#drawModeSeg .seg'));
+  const cellSizeEl  = document.getElementById('cellSize');
+  const alphaEl     = document.getElementById('alpha');
+  const snapEl      = document.getElementById('snapToggle');
+  const snapRow     = document.getElementById('snapRow');
+  const btnDemo     = document.getElementById('btnDemo');
+  const btnClear    = document.getElementById('btnClear');
+  const btnExport   = document.getElementById('btnExport');
+  const btnPanels   = document.getElementById('btnPanels');
+  const importModal = document.getElementById('importModal');
+  const btnImportPick  = document.getElementById('btnImportPick');
+  const btnImportClose = document.getElementById('btnImportClose');
+  const fileInput   = document.getElementById('fileInput');
+  const exStroke    = document.getElementById('exStroke');
+  const exFilled    = document.getElementById('exFilled');
+  const hintBar     = document.getElementById('hintBar');
+  const toastEl     = document.getElementById('toast');
+  const cellSizeVal = document.getElementById('cellSizeVal');
+  const alphaVal    = document.getElementById('alphaVal');
+  const samplingDist= document.getElementById('samplingDist');
+  const statNodes   = document.getElementById('statNodes');
+  const statElems   = document.getElementById('statElems');
+  const statSamples = document.getElementById('statSamples');
+  const btnPhase    = document.getElementById('btnPhase');
+  const controlsPanel = document.getElementById('controlsPanel');
+  const btnAddPointLoad = document.getElementById('btnAddPointLoad');
+  const btnAddDistLoad  = document.getElementById('btnAddDistLoad');
+  const btnAddSupport   = document.getElementById('btnAddSupport');
+  const bcList      = document.getElementById('bcList');
+  const condModal   = document.getElementById('condModal');
+  const condTitle   = document.getElementById('condTitle');
+  const condName    = document.getElementById('condName');
+  const condFx      = document.getElementById('condFx');
+  const condFy      = document.getElementById('condFy');
+  const condVec     = document.getElementById('condVec');
+  const condTypeRow = document.getElementById('condTypeRow');
+  const condTypeSegButtons = Array.from(document.querySelectorAll('#condTypeSeg .seg'));
+  const condCount   = document.getElementById('condCount');
+  const btnCondOk   = document.getElementById('btnCondOk');
+  const btnCondCancel = document.getElementById('btnCondCancel');
+
+  /* ============================================================
+     2. Application state — the single source of truth
+     ============================================================ */
+  const state = {
+    gridType: 'square',
+    cellSize: 40,
+    alpha: 0.5,
+    snap: true,
+    drawMode: 'point',      // 'point' (click-to-point) | 'freehand' (drag)
+    freehandActive: false,  // currently tracing a freehand stroke
+    drawing: [],            // vertices being placed (in-progress polygon)
+    polygon: null,          // finalized polygon (array of {x,y}) or null
+    cells: [],              // generated background grid (array of polygons)
+    mesh: null,             // { nodes, elements, interiorCount, boundaryCount }
+    samples: [],            // resampled boundary sampling points
+    phase: 'mesh',          // 'mesh' (draw/edit) | 'bc' (boundary conditions)
+    pointLoads: [],         // { name, nodeIds[], fx, fy }
+    distLoads: [],          // { name, edges: [[a,b],...], fx, fy }
+    supports: [],           // { name, type: 'fixed'|'hinge', nodeIds[] }
+    allEdges: [],           // cached Mesh.allEdges (boundary + interior) for the current mesh
+    bcSel: null,            // live selection: { kind, nodes:Set, edges:Map, box, ... }
+    cursor: null,           // live pointer position (CSS px)
+    dpr: 1,
+    w: 0, h: 0,
+  };
+
+  const renderer = Renderer.createRenderer(ctx);
+
+  /* ============================================================
+     3. Pipeline — regenerate grid, mesh, readouts, canvas
+     ============================================================ */
+
+  function refresh() {
+    // The grid covers the canvas plus a two-cell margin, so cells can
+    // never be "missing" near the edges of the drawn polygon.
+    const m = state.cellSize * 2;
+    const rect = { minX: -m, minY: -m, maxX: state.w + m, maxY: state.h + m };
+    state.cells = Grid.generateCells(state.gridType, rect, state.cellSize);
+    // Node ids change whenever the mesh is rebuilt, so boundary conditions
+    // (which reference node/edge ids) are invalidated. Cancel live selection.
+    const hadConditions = state.pointLoads.length || state.distLoads.length || state.supports.length;
+    state.pointLoads = [];
+    state.distLoads = [];
+    state.supports = [];
+    if (state.bcSel) cancelBcSelect();
+    computeMesh();
+    state.allEdges = state.mesh ? Mesh.allEdges(state.mesh) : [];
+    updateReadouts();
+    renderBcList();
+    renderer.render(state);
+    if (hadConditions) showToast('Mesh changed — boundary conditions cleared');
+  }
+
+  function computeMesh() {
+    const poly = state.polygon;
+    if (!poly || poly.length < 3) {
+      state.mesh = null;
+      state.samples = [];
+      return;
+    }
+    const S = state.cellSize * state.alpha;
+    state.samples = G.resamplePolygon(poly, S);
+    // Scale-adaptive spatial tolerance for classification and clipping.
+    const spatialEps = state.cellSize * Constants.EPS_SCALE;
+    // classify against the light original polygon, clip against resampled.
+    state.mesh = Mesh.buildMesh(state.cells, poly, state.samples, spatialEps);
+  }
+
+  function updateReadouts() {
+    cellSizeVal.textContent = Export.fmt(state.cellSize) + ' px';
+    alphaVal.textContent = state.alpha.toFixed(2);
+    samplingDist.textContent = 'Sampling distance S = ' + Export.fmt(state.cellSize * state.alpha) + ' px';
+    statNodes.textContent = state.mesh ? state.mesh.nodes.length : 0;
+    statElems.textContent = state.mesh ? state.mesh.elements.length : 0;
+    statSamples.textContent = state.samples.length;
+  }
+
+  /* ============================================================
+     4. UI helpers
+     ============================================================ */
+
+  let toastTimer = null;
+  function showToast(msg) {
+    toastEl.textContent = msg;
+    toastEl.classList.add('visible');
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => toastEl.classList.remove('visible'), 2600);
+  }
+
+  /** Hide the floating panels while a polygon is being drawn (focus mode). */
+  function syncPanels() {
+    const drawing = state.drawing.length > 0 || state.freehandActive;
+    stage.classList.toggle('drawing', drawing);
+    btnPanels.disabled = drawing; // panel toggle is unavailable mid-drawing
+  }
+
+  /** Manual show/hide toggle for the floating panels. */
+  let panelsHidden = false;
+  function togglePanels() {
+    panelsHidden = !panelsHidden;
+    stage.classList.toggle('ui-off', panelsHidden);
+    btnPanels.textContent = panelsHidden ? 'Show Panels' : 'Hide Panels';
+  }
+
+  const HINT_POINT    = 'Click to place polygon vertices · double-click, Enter, or click the first point to close';
+  const HINT_FREEHAND = 'Click and drag to trace a shape · release to close it automatically';
+  const HINT_DONE     = 'Mesh generated — adjust the controls or press Clear to redraw';
+  const HINT_BC_IDLE  = 'Boundary-condition phase — mesh is locked. Add loads & supports from the panel.';
+  const HINT_BC_SELECT = 'Click nodes/edges or drag a box to select · Enter to confirm · Esc to cancel';
+
+  function setHint(text) {
+    if (text) { hintBar.textContent = text; return; }
+    if (state.phase === 'bc') { hintBar.textContent = HINT_BC_IDLE; return; }
+    if (state.polygon) { hintBar.textContent = HINT_DONE; return; }
+    hintBar.textContent = state.drawMode === 'freehand' ? HINT_FREEHAND : HINT_POINT;
+  }
+
+  /* ============================================================
+     5. Interaction (pointer & keyboard)
+     ============================================================ */
+
+  /** Pointer position in CSS px, clamped to the canvas. */
+  function toLocal(e) {
+    const r = canvas.getBoundingClientRect();
+    // Clamp so clicks/drags outside the window cannot place invisible
+    // off-canvas vertices (especially during captured freehand).
+    return {
+      x: Math.max(0, Math.min(state.w, e.clientX - r.left)),
+      y: Math.max(0, Math.min(state.h, e.clientY - r.top)),
+    };
+  }
+
+  /**
+   * Detect the second press of a double-click so that press does not
+   * place a vertex / start a stroke — the dblclick event that follows
+   * closes the polygon. (Without this, closing by double-click leaves a
+   * redundant spike vertex at the close point.)
+   */
+  let lastPress = null; // { time, x, y } of the previous press
+  function isSecondClickOfDoubleClick(e, p) {
+    const now = e.timeStamp;
+    const wasQuick = lastPress && (now - lastPress.time < 350);
+    const wasClose = lastPress && (V.dist(p, lastPress) < 8);
+    lastPress = { time: now, x: p.x, y: p.y };
+    return wasQuick && wasClose;
+  }
+
+  function onPointerMove(e) {
+    state.cursor = toLocal(e);
+
+    if (state.phase === 'bc') { bcPointerMove(e); return; }
+
+    if (state.freehandActive) {
+      // Sample the stroke, thinning dense points by a minimum spacing.
+      const pts = state.drawing;
+      const last = pts[pts.length - 1];
+      if (!last || V.dist(state.cursor, last) >= FREEHAND_MIN_DIST) {
+        pts.push({ x: state.cursor.x, y: state.cursor.y });
+      }
+      scheduleRender();
+    } else if (state.drawing.length) {
+      scheduleRender();
+    }
+  }
+
+  function onPointerDown(e) {
+    if (state.phase === 'bc') { bcPointerDown(e); return; }
+    if (state.polygon) return; // polygon finalized — use Clear to redraw
+
+    if (state.drawMode === 'freehand') {
+      // Start a freehand stroke (raw path, no grid snapping).
+      if (canvas.setPointerCapture) {
+        try { canvas.setPointerCapture(e.pointerId); } catch (err) { /* noop */ }
+      }
+      const p = toLocal(e);
+      if (isSecondClickOfDoubleClick(e, p)) return; // don't start a 2nd stroke
+      state.freehandActive = true;
+      state.drawing = [p];
+      syncPanels();
+      scheduleRender();
+      return;
+    }
+
+    // Click-to-point mode.
+    const p = Grid.snapPoint(toLocal(e), state.gridType, state.cellSize, state.snap);
+    if (isSecondClickOfDoubleClick(e, p)) return; // dblclick will close
+    const pts = state.drawing;
+    if (pts.length >= 3 && V.dist(p, pts[0]) < 12) { finishPolygon(); return; }
+    if (pts.length && G.snapKey(p) === G.snapKey(pts[pts.length - 1])) return;
+    pts.push(p);
+    syncPanels();
+    scheduleRender();
+  }
+
+  function onPointerUp() {
+    if (state.phase === 'bc') { bcPointerUp(); return; }
+    if (state.freehandActive) finishFreehand();
+  }
+
+  function onPointerCancel() {
+    if (state.phase === 'bc') { cancelBcBox(); return; }
+    if (state.freehandActive) {
+      state.freehandActive = false;
+      state.drawing = [];
+      syncPanels();
+      scheduleRender();
+    }
+  }
+
+  function onDblClick(e) {
+    e.preventDefault();
+    if (state.polygon || state.drawMode === 'freehand') return;
+    finishPolygon();
+  }
+
+  function onKeydown(e) {
+    if (state.phase === 'bc') {
+      // Boundary-condition phase: Enter confirms the selection, Esc cancels.
+      if (e.key === 'Enter') {
+        if (e.target && e.target.tagName === 'BUTTON') e.preventDefault();
+        if (state.bcSel) openConditionModal(state.bcSel.kind);
+      } else if (e.key === 'Escape') {
+        if (importModal.classList.contains('visible')) closeImportModal();
+        else if (condModal.classList.contains('visible')) closeConditionModal();
+        else cancelBcSelect();
+      }
+      return;
+    }
+
+    if (e.key === 'Enter') {
+      // If a button has focus, Enter would ALSO re-click that button;
+      // suppress the native re-click so Enter always means "finish".
+      if (e.target && e.target.tagName === 'BUTTON') e.preventDefault();
+      if (!state.polygon && state.drawMode === 'point') finishPolygon();
+    } else if (e.key === 'Backspace') {
+      if (state.drawMode === 'point' && state.drawing.length) { state.drawing.pop(); syncPanels(); scheduleRender(); }
+    } else if (e.key === 'Escape') {
+      if (importModal.classList.contains('visible')) closeImportModal();
+      else clearPolygon();
+    }
+  }
+
+  /* ============================================================
+     6. Polygon lifecycle
+     ============================================================ */
+
+  /** Finalize a set of raw points into the working polygon (both modes). */
+  function finalizePolygon(points) {
+    if (state.phase === 'bc') return; // mesh is locked during the BC phase
+    if (!points || points.length < 3) {
+      showToast('Not enough points to form a polygon');
+      return;
+    }
+    const poly = G.simplifyPolygon(points);
+    if (poly.length < 3) { showToast('Polygon is degenerate — draw a larger shape'); return; }
+    if (Math.abs(G.signedArea(poly)) < MIN_POLYGON_AREA) { showToast('Polygon is too small — draw a larger shape'); return; }
+    if (!G.isSimplePolygon(poly)) { showToast('Polygon self-intersects — press Clear and redraw'); return; }
+
+    state.polygon = poly;
+    state.drawing = [];
+    state.freehandActive = false;
+    state.cursor = null;
+    syncPanels();
+    setHint();
+    refresh();
+  }
+
+  function finishPolygon() {
+    finalizePolygon(state.drawing);
+  }
+
+  function finishFreehand() {
+    state.freehandActive = false;
+    const pts = state.drawing;
+    state.drawing = [];
+    // Lightweight simplification: samples were already distance-thinned during
+    // capture; RDP removes the remaining collinear/redundant points.
+    finalizePolygon(G.rdpSimplify(pts, FREEHAND_EPSILON));
+  }
+
+  function clearPolygon() {
+    if (state.phase === 'bc') return; // mesh is locked during the BC phase
+    state.polygon = null;
+    state.drawing = [];
+    syncPanels();
+    state.freehandActive = false;
+    state.mesh = null;
+    state.samples = [];
+    state.cursor = null;
+    setHint();
+    refresh();
+  }
+
+  /* ============================================================
+     7. Demo & export
+     ============================================================ */
+
+  function loadDemo() {
+    if (state.phase === 'bc') return; // mesh is locked during the BC phase
+    state.drawing = [];
+    state.polygon = G.simplifyPolygon(Demo.buildPolygon(state.w, state.h));
+    state.cursor = null;
+    setHint();
+    refresh();
+  }
+
+  function exportTxt() {
+    if (!state.mesh || !state.mesh.elements.length) {
+      showToast('Nothing to export — draw a polygon first');
+      return;
+    }
+    const text = Export.buildTxt(state.mesh, { height: state.h, fit: Constants.EXPORT_FIT }, {
+      pointLoads: state.pointLoads,
+      distLoads: state.distLoads,
+      supports: state.supports,
+    });
+    const blob = new Blob([text], { type: 'text/plain' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'mesh.txt';
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+    showToast('Exported mesh.txt (' + state.mesh.nodes.length + ' nodes, ' + state.mesh.elements.length + ' elements)');
+  }
+
+  /* ============================================================
+     8. Image import (upload → contour → polygon)
+     ============================================================ */
+
+  /** Draw one example image (stroke or filled) inside the modal. */
+  function drawImportExample(canvas, filled) {
+    const c = canvas.getContext('2d');
+    const pts = Demo.buildPolygon(canvas.width, canvas.height);
+    c.clearRect(0, 0, canvas.width, canvas.height);
+    c.fillStyle = '#fff';
+    c.fillRect(0, 0, canvas.width, canvas.height);
+    const path = new Path2D();
+    path.moveTo(pts[0].x, pts[0].y);
+    for (let i = 1; i < pts.length; i++) path.lineTo(pts[i].x, pts[i].y);
+    path.closePath();
+    if (filled) {
+      c.fillStyle = '#1d1d1f';
+      c.fill(path);
+    } else {
+      c.strokeStyle = '#1d1d1f';
+      c.lineWidth = 4;
+      c.lineJoin = 'round';
+      c.stroke(path);
+    }
+  }
+
+  function openImportModal() {
+    drawImportExample(exStroke, false);
+    drawImportExample(exFilled, true);
+    importModal.classList.add('visible');
+  }
+
+  function closeImportModal() {
+    importModal.classList.remove('visible');
+  }
+
+  function onFileSelected() {
+    if (state.phase === 'bc') return; // mesh is locked during the BC phase
+    const file = fileInput.files && fileInput.files[0];
+    if (!file) return;
+    loadImageFile(file);
+  }
+
+  /**
+   * Read an image file, run the contour pipeline, and feed the result
+   * into the normal polygon flow (finalizePolygon validates it and
+   * regenerates the mesh).
+   */
+  function loadImageFile(file) {
+    const url = URL.createObjectURL(file);
+    const img = new window.Image();
+    img.onload = () => {
+      try {
+        // Cap the processing resolution for speed.
+        const maxDim = 1200;
+        const scale = Math.min(1, maxDim / Math.max(img.naturalWidth, img.naturalHeight));
+        const w = Math.max(1, Math.round(img.naturalWidth * scale));
+        const h = Math.max(1, Math.round(img.naturalHeight * scale));
+        const c = document.createElement('canvas');
+        c.width = w; c.height = h;
+        const cx = c.getContext('2d', { willReadFrequently: true });
+        cx.drawImage(img, 0, 0, w, h);
+        const imageData = cx.getImageData(0, 0, w, h);
+
+        const result = ImageProc.extractPolygon(imageData, {
+          targetW: state.w,
+          targetH: state.h,
+        });
+        if (!result) {
+          showToast('No shape detected — try a clearer image');
+          return;
+        }
+        // Route through the standard validation (area, simplicity, …).
+        finalizePolygon(result.polygon);
+        if (state.polygon) {
+          showToast('Imported ' + (result.kind === 'filled' ? 'filled shape' : 'stroke outline') +
+                    ' (' + state.polygon.length + ' vertices)');
+        }
+      } catch (err) {
+        console.error(err);
+        showToast('Image processing failed');
+      } finally {
+        URL.revokeObjectURL(url);
+        closeImportModal();
+      }
+    };
+    img.onerror = () => {
+      URL.revokeObjectURL(url);
+      showToast('Could not read that image');
+      closeImportModal();
+    };
+    img.src = url;
+  }
+
+  /* ============================================================
+     9. Boundary conditions (loads & supports)
+     ============================================================ */
+
+  let condState = null; // { kind } while the condition modal is open
+
+  /** Switch between the mesh phase and the boundary-condition phase. */
+  function setPhase(p) {
+    if (p === state.phase) return;
+    if (p === 'bc' && (!state.mesh || !state.mesh.nodes.length)) {
+      showToast('Draw a polygon first to create a mesh');
+      return;
+    }
+    state.phase = p;
+    stage.classList.toggle('bc', p === 'bc');
+    cancelBcSelect();
+    syncPhaseControls();
+    setHint();
+    scheduleRender();
+  }
+
+  /** Lock/unlock the mesh controls and update the phase button. */
+  function syncPhaseControls() {
+    const locked = state.phase === 'bc';
+    btnPhase.textContent = locked ? 'Edit Mesh' : 'Set BCs';
+    btnPhase.classList.toggle('btn-primary', locked);
+    btnDemo.disabled = locked;
+    btnClear.disabled = locked;
+    controlsPanel.classList.toggle('locked', locked);
+    segButtons.forEach(b => { b.disabled = locked; });
+    drawModeButtons.forEach(b => { b.disabled = locked; });
+    cellSizeEl.disabled = locked;
+    alphaEl.disabled = locked;
+    snapEl.disabled = locked || state.drawMode === 'freehand';
+  }
+
+  /* ---------- Selection ---------- */
+
+  /** Begin a live selection for a new condition group. */
+  function startBcSelect(kind) {
+    if (state.phase !== 'bc') return;
+    cancelBcSelect();
+    state.bcSel = {
+      kind,                       // 'pointload' | 'distload' | 'support'
+      nodes: new Set(),           // selected node ids
+      edges: new Map(),           // selected boundary edges: key 'a_b' -> [a, b]
+      box: null,                  // rubber-band rect while dragging
+      dragStart: null,
+      dragging: false,
+    };
+    setHint(HINT_BC_SELECT);
+    scheduleRender();
+  }
+
+  function cancelBcSelect() {
+    if (!state.bcSel) return;
+    state.bcSel = null;
+    setHint();
+    scheduleRender();
+  }
+
+  /** Abort an in-progress rubber-band drag (pointercancel). */
+  function cancelBcBox() {
+    if (state.bcSel) {
+      state.bcSel.dragStart = null;
+      state.bcSel.dragging = false;
+      state.bcSel.box = null;
+      scheduleRender();
+    }
+  }
+
+  function bcPointerDown(e) {
+    if (!state.bcSel) return;
+    const p = toLocal(e);
+    state.bcSel.dragStart = { x: p.x, y: p.y };
+    state.bcSel.dragging = false;
+    state.bcSel.box = null;
+  }
+
+  function bcPointerMove(e) {
+    if (!state.bcSel || !state.bcSel.dragStart) return;
+    if (!state.bcSel.dragging && V.dist(state.bcSel.dragStart, state.cursor) > Constants.BC_DRAG_THRESHOLD) {
+      state.bcSel.dragging = true;
+    }
+    if (state.bcSel.dragging) {
+      const a = state.bcSel.dragStart, b = state.cursor;
+      state.bcSel.box = {
+        minX: Math.min(a.x, b.x), minY: Math.min(a.y, b.y),
+        maxX: Math.max(a.x, b.x), maxY: Math.max(a.y, b.y),
+      };
+    }
+    scheduleRender();
+  }
+
+  function bcPointerUp() {
+    if (!state.bcSel) return;
+    if (state.bcSel.dragging) {
+      applyBoxSelection(state.bcSel.box);
+      state.bcSel.box = null;
+    } else {
+      clickSelect(state.bcSel.kind, state.cursor);
+    }
+    state.bcSel.dragStart = null;
+    state.bcSel.dragging = false;
+    scheduleRender();
+  }
+
+  /** Click selection: nearest node (point load / support) or boundary edge. */
+  function clickSelect(kind, p) {
+    const mesh = state.mesh;
+    if (!mesh) return;
+    if (kind === 'distload') {
+      const idx = Mesh.nearestEdge(state.allEdges, mesh, p, Constants.BC_SELECT_RADIUS);
+      if (idx < 0) { showToast('No mesh edge near the click'); return; }
+      const [a, b] = state.allEdges[idx];
+      const key = a < b ? a + '_' + b : b + '_' + a;
+      if (state.bcSel.edges.has(key)) state.bcSel.edges.delete(key);
+      else state.bcSel.edges.set(key, [a, b]);
+    } else {
+      const id = Mesh.nearestNode(mesh, p, Constants.BC_SELECT_RADIUS);
+      if (id < 0) { showToast('No node near the click'); return; }
+      if (state.bcSel.nodes.has(id)) state.bcSel.nodes.delete(id);
+      else state.bcSel.nodes.add(id);
+    }
+  }
+
+  /** Box selection: nodes inside the box, or edges with midpoint inside. */
+  function applyBoxSelection(box) {
+    const mesh = state.mesh;
+    if (!box || !mesh) return;
+    if (state.bcSel.kind === 'distload') {
+      for (const idx of Mesh.edgesInBox(state.allEdges, mesh, box)) {
+        const [a, b] = state.allEdges[idx];
+        const key = a < b ? a + '_' + b : b + '_' + a;
+        state.bcSel.edges.set(key, [a, b]);
+      }
+    } else {
+      for (const id of Mesh.nodesInBox(mesh, box)) state.bcSel.nodes.add(id);
+    }
+  }
+
+  /* ---------- Condition modal (name / vector / type) ---------- */
+
+  function defaultName(kind) {
+    const list = kind === 'pointload' ? state.pointLoads
+               : kind === 'distload' ? state.distLoads : state.supports;
+    const base = kind === 'pointload' ? 'Point_load'
+               : kind === 'distload' ? 'Distributed_load' : 'Support';
+    const names = new Set(list.map(g => g.name));
+    let n = 1;
+    while (names.has(base + '_' + n)) n++;
+    return base + '_' + n;
+  }
+
+  function openConditionModal(kind) {
+    const sel = state.bcSel;
+    if (!sel) return;
+    const count = kind === 'distload' ? sel.edges.size : sel.nodes.size;
+    if (!count) {
+      showToast(kind === 'distload' ? 'Select mesh edges first' : 'Select nodes first');
+      return;
+    }
+    condState = { kind };
+    condTitle.textContent = kind === 'pointload' ? 'Point Load'
+                          : kind === 'distload' ? 'Distributed Load' : 'Support';
+    condVec.style.display = kind === 'support' ? 'none' : '';
+    condTypeRow.style.display = kind === 'support' ? '' : 'none';
+    condName.value = defaultName(kind);
+    condFx.value = '0';
+    condFy.value = '0';
+    condTypeSegButtons.forEach(b => b.classList.toggle('active', b.dataset.value === 'fixed'));
+    condCount.textContent = count + (kind === 'distload' ? ' edges selected' : ' nodes selected');
+    condModal.classList.add('visible');
+    condName.focus();
+    condName.select();
+  }
+
+  function closeConditionModal() {
+    condModal.classList.remove('visible');
+  }
+
+  function confirmCondition() {
+    if (!condState) return;
+    const kind = condState.kind;
+    const name = condName.value.trim();
+    if (!name) { showToast('Enter a name'); return; }
+    if (kind === 'support') {
+      const active = condTypeSegButtons.find(b => b.classList.contains('active'));
+      const type = (active && active.dataset.value) || 'fixed';
+      state.supports.push({ name, type, nodeIds: [...state.bcSel.nodes] });
+    } else {
+      const fx = parseFloat(condFx.value) || 0;
+      const fy = parseFloat(condFy.value) || 0;
+      if (kind === 'pointload') {
+        state.pointLoads.push({ name, nodeIds: [...state.bcSel.nodes], fx, fy });
+      } else {
+        state.distLoads.push({ name, edges: [...state.bcSel.edges.values()], fx, fy });
+      }
+    }
+    condState = null;
+    state.bcSel = null;
+    closeConditionModal();
+    renderBcList();
+    setHint();
+    scheduleRender();
+  }
+
+  /* ---------- Condition list ---------- */
+
+  function deleteCondition(kind, index) {
+    const arr = kind === 'point' ? state.pointLoads
+              : kind === 'dist' ? state.distLoads : state.supports;
+    arr.splice(index, 1);
+    renderBcList();
+    scheduleRender();
+  }
+
+  function renderBcList() {
+    bcList.textContent = '';
+    const items = [];
+    state.pointLoads.forEach((g, i) => items.push({ g, kind: 'point', i }));
+    state.distLoads.forEach((g, i) => items.push({ g, kind: 'dist', i }));
+    state.supports.forEach((g, i) => items.push({ g, kind: 'support', i }));
+    if (!items.length) {
+      const empty = document.createElement('div');
+      empty.className = 'bc-empty';
+      empty.textContent = 'No conditions yet';
+      bcList.appendChild(empty);
+      return;
+    }
+    for (const { g, kind, i } of items) {
+      const row = document.createElement('div');
+      row.className = 'bc-item';
+      const label = document.createElement('span');
+      const count = kind === 'dist' ? g.edges.length + ' edges' : g.nodeIds.length + ' nodes';
+      label.textContent = g.name + ' — ' + count;
+      const del = document.createElement('button');
+      del.className = 'btn btn-ghost bc-del';
+      del.textContent = '✕';
+      del.addEventListener('click', () => deleteCondition(kind, i));
+      row.appendChild(label);
+      row.appendChild(del);
+      bcList.appendChild(row);
+    }
+  }
+
+  /* ============================================================
+     10. Layout (Hi-DPI) & event wiring
+     ============================================================ */
+
+  function resize() {
+    const rect = stage.getBoundingClientRect();
+    state.dpr = window.devicePixelRatio || 1;
+    state.w = rect.width;
+    state.h = rect.height;
+    canvas.width = Math.round(rect.width * state.dpr);
+    canvas.height = Math.round(rect.height * state.dpr);
+    canvas.style.width = rect.width + 'px';
+    canvas.style.height = rect.height + 'px';
+    ctx.setTransform(state.dpr, 0, 0, state.dpr, 0, 0);
+    refresh();
+  }
+
+  // ResizeObserver fires continuously while the window is being dragged;
+  // coalesce to one full recompute per animation frame.
+  let resizeRaf = null;
+  function scheduleResize() {
+    if (resizeRaf) return;
+    resizeRaf = requestAnimationFrame(() => { resizeRaf = null; resize(); });
+  }
+
+  function updateSliderFill(input) {
+    const min = parseFloat(input.min), max = parseFloat(input.max);
+    const pct = ((parseFloat(input.value) - min) / (max - min)) * 100;
+    input.style.setProperty('--val', pct + '%');
+  }
+
+  /** Throttle the expensive mesh recompute to once per frame. */
+  let refreshRaf = null;
+  function scheduleRefresh() {
+    if (refreshRaf) return;
+    refreshRaf = requestAnimationFrame(() => { refreshRaf = null; refresh(); });
+  }
+
+  /** Coalesce plain re-renders (cheap) to once per frame. */
+  let rafId = null;
+  function scheduleRender() {
+    if (rafId) return;
+    rafId = requestAnimationFrame(() => { rafId = null; renderer.render(state); });
+  }
+
+  /* ---------- Wire up the controls ---------- */
+
+  segButtons.forEach(btn => btn.addEventListener('click', () => {
+    segButtons.forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    state.gridType = btn.dataset.value;
+    refresh();
+  }));
+
+  drawModeButtons.forEach(btn => btn.addEventListener('click', () => {
+    if (state.phase === 'bc') return; // draw-mode controls are locked
+    // "Import" is a momentary action, not a persistent draw mode: open the
+    // guide modal and leave the previously selected mode untouched.
+    if (btn.dataset.value === 'image') {
+      openImportModal();
+      return;
+    }
+    drawModeButtons.forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    state.drawMode = btn.dataset.value;
+    snapRow.classList.toggle('disabled', btn.dataset.value === 'freehand');
+    snapEl.disabled = btn.dataset.value === 'freehand';
+    state.freehandActive = false;
+    state.drawing = [];        // drop any in-progress stroke on mode switch
+    state.cursor = null;
+    syncPanels();
+    setHint();
+    scheduleRender();
+  }));
+
+  cellSizeEl.addEventListener('input', () => {
+    state.cellSize = parseFloat(cellSizeEl.value);
+    updateSliderFill(cellSizeEl);
+    scheduleRefresh();
+  });
+
+  alphaEl.addEventListener('input', () => {
+    state.alpha = parseFloat(alphaEl.value);
+    updateSliderFill(alphaEl);
+    scheduleRefresh();
+  });
+
+  snapEl.addEventListener('change', () => { state.snap = snapEl.checked; });
+
+  btnDemo.addEventListener('click', loadDemo);
+  btnClear.addEventListener('click', clearPolygon);
+  btnExport.addEventListener('click', exportTxt);
+  btnPanels.addEventListener('click', togglePanels);
+
+  // Image import modal (opened via the "Import" segment in Draw Mode)
+  btnImportPick.addEventListener('click', () => fileInput.click());
+  btnImportClose.addEventListener('click', closeImportModal);
+  fileInput.addEventListener('change', onFileSelected);
+  importModal.addEventListener('click', (e) => {
+    if (e.target === importModal) closeImportModal(); // click backdrop to close
+  });
+
+  // Boundary-condition phase
+  btnPhase.addEventListener('click', () => setPhase(state.phase === 'bc' ? 'mesh' : 'bc'));
+  btnAddPointLoad.addEventListener('click', () => startBcSelect('pointload'));
+  btnAddDistLoad.addEventListener('click', () => startBcSelect('distload'));
+  btnAddSupport.addEventListener('click', () => startBcSelect('support'));
+  btnCondOk.addEventListener('click', confirmCondition);
+  btnCondCancel.addEventListener('click', () => {
+    condState = null;
+    closeConditionModal();
+    cancelBcSelect();
+  });
+  condTypeSegButtons.forEach(btn => btn.addEventListener('click', () => {
+    condTypeSegButtons.forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+  }));
+  // Enter inside the modal confirms the condition.
+  [condName, condFx, condFy].forEach(el => el.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') { e.preventDefault(); confirmCondition(); }
+  }));
+  condModal.addEventListener('click', (e) => {
+    if (e.target === condModal) { // click backdrop to cancel
+      condState = null;
+      closeConditionModal();
+      cancelBcSelect();
+    }
+  });
+
+  canvas.addEventListener('pointerdown', onPointerDown);
+  canvas.addEventListener('pointermove', onPointerMove);
+  canvas.addEventListener('pointerup', onPointerUp);
+  canvas.addEventListener('pointercancel', onPointerCancel);
+  canvas.addEventListener('dblclick', onDblClick);
+  window.addEventListener('keydown', onKeydown);
+
+  new ResizeObserver(() => scheduleResize()).observe(stage);
+
+  /* ============================================================
+     11. Init
+     ============================================================ */
+  updateSliderFill(cellSizeEl);
+  updateSliderFill(alphaEl);
+  resize();
+  loadDemo();
+  renderBcList();
+})(window);

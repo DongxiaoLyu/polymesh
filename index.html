@@ -1,0 +1,499 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+<title>PolyMesh — VEM Preprocessor</title>
+<style>
+  /* ============================================================
+     Apple Industrial Design system
+     ============================================================ */
+  :root {
+    --bg:            #F5F5F7;
+    --panel:         rgba(255, 255, 255, 0.78);
+    --blur:          blur(20px) saturate(180%);
+    --radius:        16px;
+    --shadow:        0 4px 24px rgba(0, 0, 0, 0.06);
+    --accent:        #0071E3;
+    --accent-press:  #0062c4;
+    --text:          #1d1d1f;
+    --text-2:        #6e6e73;
+    --hairline:      rgba(0, 0, 0, 0.08);
+    --track:         #e3e3e8;
+    --font: -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text",
+            "Inter", "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  }
+
+  * { box-sizing: border-box; }
+
+  html, body {
+    margin: 0;
+    height: 100%;
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--font);
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+    overflow: hidden;
+    user-select: none;
+    -webkit-user-select: none;
+  }
+
+  /* ---------- Top bar ---------- */
+  .topbar {
+    height: 64px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0 20px;
+    gap: 16px;
+    border-bottom: 1px solid var(--hairline);
+    background: var(--panel);
+    backdrop-filter: var(--blur);
+    -webkit-backdrop-filter: var(--blur);
+    z-index: 20;
+    position: relative;
+  }
+  .brand { display: flex; align-items: center; gap: 12px; min-width: 0; }
+  .brand .mark {
+    width: 34px; height: 34px; border-radius: 9px;
+    background: linear-gradient(160deg, #0a84ff, #0071E3);
+    color: #fff; display: grid; place-items: center;
+    box-shadow: 0 4px 12px rgba(0,113,227,0.35);
+    flex: 0 0 auto;
+  }
+  .brand h1 { font-size: 17px; font-weight: 600; margin: 0; letter-spacing: -0.2px; }
+  .brand p  { font-size: 12px; color: var(--text-2); margin: 1px 0 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+  .topbar-actions { display: flex; gap: 8px; flex: 0 0 auto; }
+
+  /* ---------- Buttons ---------- */
+  .btn {
+    font-family: inherit;
+    font-size: 13px; font-weight: 500;
+    padding: 8px 16px; border-radius: 10px;
+    border: 1px solid transparent;
+    cursor: pointer; transition: background .15s ease, transform .05s ease, box-shadow .15s ease;
+    white-space: nowrap;
+  }
+  .btn:active { transform: scale(0.97); }
+  .btn:disabled { opacity: 0.45; cursor: default; }
+  .btn-primary { background: var(--accent); color: #fff; box-shadow: 0 2px 8px rgba(0,113,227,0.28); }
+  .btn-primary:hover { background: var(--accent-press); }
+  .btn-ghost { background: rgba(255,255,255,0.6); color: var(--text); border-color: var(--hairline); }
+  .btn-ghost:hover { background: rgba(0,0,0,0.05); }
+
+  /* ---------- Stage ---------- */
+  .stage { position: relative; height: calc(100% - 64px); }
+  /* Scoped to the MAIN drawing canvas only — a bare `canvas` selector
+     would also hit the modal's example canvases (position: absolute
+     would yank them out of flow and break the modal layout). */
+  #canvas {
+    position: absolute; inset: 0;
+    display: block;
+    touch-action: none;
+    cursor: crosshair;
+  }
+
+  /* ---------- Floating glass panels ---------- */
+  .panel {
+    position: absolute;
+    background: var(--panel);
+    backdrop-filter: var(--blur);
+    -webkit-backdrop-filter: var(--blur);
+    border-radius: var(--radius);
+    box-shadow: var(--shadow);
+    border: 1px solid rgba(255,255,255,0.6);
+    padding: 16px;
+    z-index: 10;
+    transition: opacity .2s ease, visibility .2s ease;
+  }
+  .panel-controls { top: 16px; left: 16px; width: 288px; }
+  .panel-stats   { top: 16px; right: 16px; min-width: 168px; padding: 12px 14px; }
+  .panel-legend  { bottom: 16px; left: 16px; padding: 14px; pointer-events: none; }
+  .panel-legend .legend { margin-top: 8px; padding-top: 0; border-top: none; }
+
+  /* ---------- Panel visibility (drawing focus + manual toggle) ---------- */
+  .stage.drawing .panel { opacity: 0; visibility: hidden; pointer-events: none; }
+  .stage.ui-off .panel { opacity: 0; visibility: hidden; pointer-events: none; }
+
+  .panel-section { margin-bottom: 18px; }
+  .panel-section:last-child { margin-bottom: 0; }
+
+  .section-label { display: block; font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.6px; color: var(--text-2); margin-bottom: 8px; }
+
+  .label-row { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
+  .label-row label { font-size: 13px; font-weight: 500; }
+  .badge {
+    font-size: 12px; font-weight: 600; font-variant-numeric: tabular-nums;
+    background: rgba(0,0,0,0.05); color: var(--text);
+    padding: 3px 9px; border-radius: 20px;
+  }
+  .hint { font-size: 11px; color: var(--text-2); margin-top: 6px; }
+
+  /* ---------- Segmented control (iOS style) ---------- */
+  .segmented {
+    display: flex; background: rgba(0,0,0,0.06);
+    border-radius: 10px; padding: 2px; gap: 2px;
+  }
+  .segmented .seg {
+    flex: 1; font-family: inherit; font-size: 12px; font-weight: 500;
+    padding: 7px 4px; border: none; border-radius: 8px; cursor: pointer;
+    background: transparent; color: var(--text); transition: background .15s ease, box-shadow .15s ease;
+    text-align: center;
+  }
+  .segmented .seg.active {
+    background: #fff; box-shadow: 0 1px 3px rgba(0,0,0,0.14), 0 0 0 0.5px rgba(0,0,0,0.02);
+  }
+
+  /* ---------- Sliders (iOS style) ---------- */
+  input[type="range"] {
+    -webkit-appearance: none; appearance: none;
+    width: 100%; height: 24px; background: transparent; cursor: pointer; display: block;
+  }
+  input[type="range"]::-webkit-slider-runnable-track {
+    height: 4px; border-radius: 2px;
+    background: linear-gradient(to right, var(--accent) var(--val, 50%), var(--track) var(--val, 50%));
+  }
+  input[type="range"]::-webkit-slider-thumb {
+    -webkit-appearance: none; appearance: none;
+    width: 24px; height: 24px; border-radius: 50%;
+    background: #fff; border: 0.5px solid rgba(0,0,0,0.06);
+    box-shadow: 0 1px 4px rgba(0,0,0,0.2), 0 0 0 0.5px rgba(0,0,0,0.03);
+    margin-top: -10px; /* center on track */
+    transition: transform .08s ease;
+  }
+  input[type="range"]:active::-webkit-slider-thumb { transform: scale(1.12); }
+  input[type="range"]::-moz-range-track { height: 4px; border-radius: 2px; background: var(--track); }
+  input[type="range"]::-moz-range-progress { height: 4px; border-radius: 2px; background: var(--accent); }
+  input[type="range"]::-moz-range-thumb {
+    width: 24px; height: 24px; border-radius: 50%; background: #fff;
+    border: 0.5px solid rgba(0,0,0,0.06); box-shadow: 0 1px 4px rgba(0,0,0,0.2);
+  }
+
+  /* ---------- Toggle switch ---------- */
+  .toggle-row { display: flex; align-items: center; justify-content: space-between; }
+  .toggle-row label { font-size: 13px; font-weight: 500; }
+  .toggle-row.disabled { opacity: 0.45; pointer-events: none; }
+  .switch { position: relative; display: inline-block; width: 44px; height: 26px; flex: 0 0 auto; }
+  .switch input { opacity: 0; width: 0; height: 0; }
+  .switch .slider {
+    position: absolute; inset: 0; border-radius: 26px; background: var(--track);
+    transition: background .2s ease; cursor: pointer;
+  }
+  .switch .slider::before {
+    content: ""; position: absolute; width: 22px; height: 22px; left: 2px; top: 2px;
+    border-radius: 50%; background: #fff; box-shadow: 0 1px 3px rgba(0,0,0,0.25);
+    transition: transform .2s ease;
+  }
+  .switch input:checked + .slider { background: var(--accent); }
+  .switch input:checked + .slider::before { transform: translateX(18px); }
+
+  /* ---------- Stats ---------- */
+  .stat { display: flex; flex-direction: column; padding: 4px 0; }
+  .stat + .stat { border-top: 1px solid var(--hairline); margin-top: 4px; padding-top: 10px; }
+  .stat-num { font-size: 20px; font-weight: 650; letter-spacing: -0.3px; font-variant-numeric: tabular-nums; }
+  .stat-label { font-size: 11px; color: var(--text-2); margin-top: 1px; }
+  .legend { margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--hairline); display: flex; flex-direction: column; gap: 6px; }
+  .legend-item { display: flex; align-items: center; gap: 8px; font-size: 11px; color: var(--text-2); }
+  .legend-swatch { width: 12px; height: 12px; border-radius: 4px; flex: 0 0 auto; }
+  .legend-dot { border-radius: 50%; }
+
+  /* ---------- Hint bar ---------- */
+  .hint-bar {
+    position: absolute; bottom: 18px; left: 50%; transform: translateX(-50%);
+    background: var(--panel); backdrop-filter: var(--blur); -webkit-backdrop-filter: var(--blur);
+    border-radius: 20px; box-shadow: var(--shadow); border: 1px solid rgba(255,255,255,0.6);
+    padding: 9px 18px; font-size: 12.5px; color: var(--text); z-index: 10;
+    text-align: center; max-width: calc(100% - 40px); pointer-events: none;
+    transition: opacity .25s ease;
+  }
+
+  /* ---------- Toast ---------- */
+  .toast {
+    position: absolute; top: 20px; left: 50%; transform: translate(-50%, -8px);
+    background: rgba(30,30,32,0.92); color: #fff; font-size: 13px; padding: 10px 18px;
+    border-radius: 12px; box-shadow: 0 8px 30px rgba(0,0,0,0.2); z-index: 30;
+    opacity: 0; pointer-events: none; transition: opacity .2s ease, transform .2s ease;
+  }
+  .toast.visible { opacity: 1; transform: translate(-50%, 0); }
+
+  /* ---------- Import modal ---------- */
+  .modal-overlay {
+    position: fixed; inset: 0; z-index: 40;
+    background: rgba(0, 0, 0, 0.35);
+    display: flex; align-items: center; justify-content: center;
+    opacity: 0; visibility: hidden;
+    transition: opacity .2s ease, visibility .2s ease;
+  }
+  .modal-overlay.visible { opacity: 1; visibility: visible; }
+  .modal {
+    position: relative;
+    background: var(--panel);
+    backdrop-filter: var(--blur);
+    -webkit-backdrop-filter: var(--blur);
+    border-radius: var(--radius);
+    box-shadow: 0 20px 60px rgba(0, 0, 0, 0.25);
+    border: 1px solid rgba(255, 255, 255, 0.6);
+    padding: 22px; width: 460px; max-width: calc(100vw - 32px);
+    max-height: calc(100vh - 32px); overflow-y: auto;
+    text-align: center;
+  }
+  .modal h2 { font-size: 17px; margin: 0 0 6px; }
+  .modal-desc { font-size: 12.5px; color: var(--text-2); margin: 0 0 16px; }
+  .modal-examples {
+    display: flex; flex-wrap: wrap; justify-content: center;
+    align-items: flex-start; margin: -8px -8px 18px;
+  }
+  .modal-examples figure {
+    position: relative; z-index: 0;
+    margin: 8px; display: flex; flex-direction: column; align-items: center;
+  }
+  .modal-examples canvas {
+    position: static;   /* insurance: never let any global canvas rule affect these */
+    display: block;
+    width: 150px; height: 150px; max-width: 100%;
+    background: #fff; border: 1px solid var(--hairline); border-radius: 12px;
+  }
+  .modal-examples figcaption { font-size: 11.5px; color: var(--text-2); margin-top: 8px; }
+  .modal-hint {
+    font-size: 11.5px; color: var(--text-2);
+    margin: 0 0 16px; padding: 10px 12px;
+    background: rgba(0, 0, 0, 0.045); border-radius: 10px;
+  }
+  .modal-actions { display: flex; justify-content: center; }
+  .modal-actions .btn + .btn { margin-left: 8px; }
+
+  /* ---------- Boundary-condition phase ---------- */
+  /* Mesh controls are visually locked while the user sets loads/supports. */
+  .panel-controls.locked .segmented,
+  .panel-controls.locked input,
+  .panel-controls.locked .toggle-row {
+    opacity: 0.45;
+    pointer-events: none;
+  }
+  /* The conditions panel only appears during the BC phase. */
+  .panel-conditions {
+    display: none;
+    right: 16px; bottom: 16px;
+    width: 230px; padding: 14px;
+  }
+  .stage.bc .panel-conditions { display: block; }
+  .bc-actions { display: flex; flex-direction: column; gap: 6px; margin-bottom: 10px; }
+  .bc-actions .btn { width: 100%; }
+  .bc-list { max-height: 170px; overflow-y: auto; }
+  .bc-item {
+    display: flex; justify-content: space-between; align-items: center;
+    font-size: 12px; padding: 5px 2px; border-top: 1px solid var(--hairline);
+  }
+  .bc-item:first-child { border-top: none; }
+  .bc-del { padding: 1px 8px; font-size: 12px; }
+  .bc-empty { font-size: 11px; color: var(--text-2); padding: 6px 2px; }
+
+  /* ---------- Condition modal (name / vector / type) ---------- */
+  .modal-narrow { width: 320px; }
+  .cond-form { text-align: left; margin-bottom: 14px; }
+  .cond-form .label-row { margin-bottom: 6px; }
+  .cond-input {
+    width: 100%; box-sizing: border-box;
+    font-family: inherit; font-size: 13px;
+    padding: 8px 10px; margin-bottom: 12px;
+    border: 1px solid var(--hairline); border-radius: 8px;
+    background: rgba(255, 255, 255, 0.8); color: var(--text);
+  }
+  .cond-vec { display: flex; gap: 8px; }
+  .cond-vec .cond-input { flex: 1; }
+  .cond-type { margin-bottom: 12px; }
+
+  /* ---------- Responsive ---------- */
+  @media (max-width: 720px) {
+    .topbar { padding: 0 12px; }
+    .brand p { display: none; }
+    .panel-controls { left: 10px; right: 10px; top: 10px; width: auto; padding: 12px; }
+    .panel-stats { left: 10px; right: 10px; top: auto; bottom: 10px; min-width: 0; }
+    .panel-legend { display: none; }
+    .hint-bar { bottom: 132px; }
+    .stage.bc .panel-controls { display: none; }          /* BC phase: swap panels */
+    .panel-conditions { left: 10px; right: 10px; top: 10px; bottom: auto; width: auto; }
+  }
+</style>
+</head>
+<body>
+
+  <header class="topbar">
+    <div class="brand">
+      <div class="mark">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M12 3l7 4v7l-7 4-7-4V7z"/>
+          <path d="M12 3v7m0 0l7 4m-7-4L5 14m7-4v10"/>
+        </svg>
+      </div>
+      <div>
+        <h1>PolyMesh</h1>
+        <p>VEM preprocessor · 2D mesh &amp; boundary conditions</p>
+      </div>
+    </div>
+    <div class="topbar-actions">
+      <button id="btnDemo"   class="btn btn-ghost">Demo</button>
+      <button id="btnClear"  class="btn btn-ghost">Clear</button>
+      <button id="btnPhase"  class="btn btn-ghost">Set BCs</button>
+      <button id="btnPanels" class="btn btn-ghost">Hide Panels</button>
+      <button id="btnExport" class="btn btn-primary">Export TXT</button>
+    </div>
+  </header>
+
+  <main class="stage" id="stage">
+    <canvas id="canvas"></canvas>
+
+    <aside class="panel panel-controls" id="controlsPanel">
+      <div class="panel-section">
+        <span class="section-label">Draw Mode</span>
+        <div class="segmented" id="drawModeSeg">
+          <button class="seg active" data-value="point">Click to Point</button>
+          <button class="seg" data-value="freehand">Freehand</button>
+          <button class="seg" data-value="image">Import</button>
+        </div>
+      </div>
+
+      <div class="panel-section">
+        <span class="section-label">Grid Type</span>
+        <div class="segmented" id="gridTypeSeg">
+          <button class="seg active" data-value="square">Square</button>
+          <button class="seg" data-value="triangle">Triangular</button>
+          <button class="seg" data-value="hexagon">Hexagonal</button>
+        </div>
+      </div>
+
+      <div class="panel-section">
+        <div class="label-row">
+          <label for="cellSize">Grid Cell Size</label>
+          <span class="badge" id="cellSizeVal">40 px</span>
+        </div>
+        <input type="range" id="cellSize" min="16" max="140" step="2" value="40" aria-label="Grid cell size" />
+      </div>
+
+      <div class="panel-section">
+        <div class="label-row">
+          <label for="alpha">Boundary Sampling &alpha;</label>
+          <span class="badge" id="alphaVal">0.50</span>
+        </div>
+        <input type="range" id="alpha" min="0.1" max="2" step="0.05" value="0.5" aria-label="Boundary sampling ratio" />
+        <div class="hint" id="samplingDist">Sampling distance S = 20 px</div>
+      </div>
+
+      <div class="panel-section toggle-row" id="snapRow">
+        <label for="snapToggle">Snap to grid</label>
+        <label class="switch">
+          <input type="checkbox" id="snapToggle" checked />
+          <span class="slider"></span>
+        </label>
+      </div>
+    </aside>
+
+    <aside class="panel panel-stats">
+      <div class="stat"><span class="stat-num" id="statNodes">0</span><span class="stat-label">Nodes</span></div>
+      <div class="stat"><span class="stat-num" id="statElems">0</span><span class="stat-label">Elements</span></div>
+      <div class="stat"><span class="stat-num" id="statSamples">0</span><span class="stat-label">Boundary samples</span></div>
+    </aside>
+
+    <aside class="panel panel-legend">
+      <span class="section-label">Legend</span>
+      <div class="legend">
+        <div class="legend-item"><span class="legend-swatch" style="background:rgba(0,113,227,0.15);border:1px solid rgba(0,113,227,0.4)"></span> Full element</div>
+        <div class="legend-item"><span class="legend-swatch" style="background:rgba(255,149,0,0.25);border:1px solid rgba(255,149,0,0.8)"></span> Clipped element</div>
+        <div class="legend-item"><span class="legend-swatch legend-dot" style="background:#8E8E93"></span> Grid node</div>
+        <div class="legend-item"><span class="legend-swatch legend-dot" style="background:#FF3B30"></span> Intersection node</div>
+        <div class="legend-item"><span class="legend-swatch legend-dot" style="background:#AF52DE"></span> Boundary sampling node</div>
+      </div>
+    </aside>
+
+    <div class="toast" id="toast"></div>
+    <div class="hint-bar" id="hintBar">Click to place polygon vertices · double-click, Enter, or click the first point to close</div>
+
+    <div class="modal-overlay" id="importModal" role="dialog" aria-modal="true" aria-label="Import image instructions">
+      <div class="modal">
+        <h2>Import Image</h2>
+        <p class="modal-desc">Upload a simple drawing. The shape type is detected automatically — both of these work:</p>
+        <div class="modal-examples">
+          <figure>
+            <canvas id="exStroke" width="150" height="150"></canvas>
+            <figcaption>① Stroke outline</figcaption>
+          </figure>
+          <figure>
+            <canvas id="exFilled" width="150" height="150"></canvas>
+            <figcaption>② Filled shape</figcaption>
+          </figure>
+        </div>
+        <p class="modal-hint">Tip: dark drawing on a light background, closed outline</p>
+        <div class="modal-actions">
+          <button id="btnImportPick" class="btn btn-primary">Choose Image…</button>
+          <button id="btnImportClose" class="btn btn-ghost">Cancel</button>
+        </div>
+        <input type="file" id="fileInput" accept="image/*" style="display:none" />
+      </div>
+    </div>
+    <aside class="panel panel-conditions">
+      <span class="section-label">Boundary Conditions</span>
+      <div class="bc-actions">
+        <button id="btnAddPointLoad" class="btn btn-ghost">Point Load</button>
+        <button id="btnAddDistLoad"  class="btn btn-ghost">Distributed Load</button>
+        <button id="btnAddSupport"   class="btn btn-ghost">Support</button>
+      </div>
+      <div class="bc-list" id="bcList"></div>
+    </aside>
+
+    <div class="modal-overlay" id="condModal" role="dialog" aria-modal="true" aria-label="Boundary condition">
+      <div class="modal modal-narrow">
+        <h2 id="condTitle">Point Load</h2>
+        <div class="cond-form">
+          <div class="label-row"><label for="condName">Name</label></div>
+          <input type="text" id="condName" class="cond-input" autocomplete="off" />
+          <div id="condVec">
+            <div class="label-row"><label>Load vector (fx, fy) — +X right, +Y up</label></div>
+            <div class="cond-vec">
+              <input type="number" id="condFx" class="cond-input" step="any" placeholder="fx" />
+              <input type="number" id="condFy" class="cond-input" step="any" placeholder="fy" />
+            </div>
+          </div>
+          <div class="cond-type" id="condTypeRow">
+            <div class="label-row"><label>Support type</label></div>
+            <div class="segmented" id="condTypeSeg">
+              <button class="seg active" data-value="fixed">Fixed</button>
+              <button class="seg" data-value="hinge">Hinge</button>
+            </div>
+          </div>
+          <p class="modal-hint" id="condCount"></p>
+        </div>
+        <div class="modal-actions">
+          <button id="btnCondOk" class="btn btn-primary">OK</button>
+          <button id="btnCondCancel" class="btn btn-ghost">Cancel</button>
+        </div>
+      </div>
+    </div>
+  </main>
+
+<!-- ============================================================
+     Script load order — keep this order! Each file is one module:
+       1. js/constants.js — tuning parameters & shared colors
+       2. js/geometry.js  — vector math & geometric predicates
+       3. js/grid.js      — grid generation & snapping
+       4. js/clipping.js  — cell clipping algorithm
+       5. js/mesh.js      — mesh construction
+       6. js/renderer.js  — canvas drawing
+       7. js/export.js    — TXT output formatting
+       8. js/demo.js      — demo polygon data
+       9. js/image.js     — image import: bitmap → contour polygon
+      10. js/app.js       — controller (state, DOM, interaction)
+     ============================================================ -->
+<script src="js/constants.js"></script>
+<script src="js/geometry.js"></script>
+<script src="js/grid.js"></script>
+<script src="js/clipping.js"></script>
+<script src="js/mesh.js"></script>
+<script src="js/renderer.js"></script>
+<script src="js/export.js"></script>
+<script src="js/demo.js"></script>
+<script src="js/image.js"></script>
+<script src="js/app.js"></script>
+</body>
+</html>
