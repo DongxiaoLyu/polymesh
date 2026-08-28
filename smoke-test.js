@@ -378,13 +378,18 @@ console.log('--- new-only checks ---');
   });
   const renderer = MS.Renderer.createRenderer(fakeCtx);
   const fakeState = {
-    w: 800, h: 600, drawMode: 'point',
+    w: 800, h: 600, dpr: 1, drawMode: 'point',
     cells: NEW.Grid.generateCells('square', {minX:-80,minY:-80,maxX:880,maxY:680}, 40),
+    viewCells: NEW.Grid.generateCells('square', {minX:-80,minY:-80,maxX:880,maxY:680}, 40),
     mesh, samples: [], polygon: null, drawing: [], cursor: {x: 10, y: 10},
     pointLoads: [], distLoads: [], supports: [], bcSel: null,
+    view: { zoom: 1, ox: 0, oy: 0 },
   };
   renderer.render(fakeState);
   renderer.render(fakeState); // second pass exercises the path cache
+  // zoomed render must also work (view transform + screen-constant sizes)
+  fakeState.view = { zoom: 4, ox: 100, oy: -50 };
+  renderer.render(fakeState);
   // exercise the boundary-condition markers + selection preview paths
   fakeState.pointLoads = [{ name: 'P', nodeIds: [0], fx: 10, fy: 0 }];
   fakeState.distLoads = [{ name: 'D', edges: [[0, 1], [1, 2]], fx: -5, fy: 3 }];

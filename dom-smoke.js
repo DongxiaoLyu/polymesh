@@ -224,6 +224,29 @@ console.log('OK: import modal opens via Draw Mode "Import" segment, examples dra
   if (elements.get('btnDemo').disabled !== false) throw new Error('Demo should be unlocked after BC phase');
   console.log('OK: BC phase exited, mesh controls unlocked');
 
+  /* ---------- Exercise: wheel zoom + reset view ---------- */
+
+  const wheel = canvasEl.listeners.wheel && canvasEl.listeners.wheel[0];
+  if (!wheel) throw new Error('wheel listener not wired');
+  wheel({ clientX: 400, clientY: 300, deltaY: -240, preventDefault() {} }); // zoom in — must not throw
+  wheel({ clientX: 400, clientY: 300, deltaY: 240, preventDefault() {} });  // zoom out — must not throw
+  const resetBtn = elements.get('btnResetView');
+  if (!resetBtn.listeners.click || !resetBtn.listeners.click.length) throw new Error('Reset View button not wired');
+  resetBtn.listeners.click[0]();                     // resetView — must not throw
+
+  // re-enter the BC phase: a click at a known node position must still select
+  // (pointer coordinates are converted through the view transform)
+  btnPhase.listeners.click[0]();
+  elements.get('btnAddPointLoad').listeners.click[0]();
+  canvasEl.listeners.pointermove[0]({ clientX: 400, clientY: 320, pointerId: 3 });
+  canvasEl.listeners.pointerdown[0]({ clientX: 400, clientY: 320, pointerId: 3 });
+  canvasEl.listeners.pointerup[0]({});
+  global._listeners.keydown[0](key('Enter'));
+  if (!condModal.classList.contains('visible')) throw new Error('node not selected after view ops');
+  console.log('OK: wheel zoom + Reset View work, selection accurate after view changes');
+  global._listeners.keydown[0](key('Escape'));       // close the modal
+  btnPhase.listeners.click[0]();                     // back to mesh phase
+
   console.log('DOM smoke OK');
 })().catch(e => {
   console.error('DOM smoke FAIL: ' + e.message);

@@ -14,6 +14,9 @@ locally in your browser.
   provenance
 - **Boundary conditions** — point loads, distributed loads (on any mesh edge),
   fixed and hinge supports; groups can be named, colored, and edited
+- **Inspection** — scroll to zoom in/out (centered on the cursor, up to 32×);
+  zoom-out is clamped at 1× so the view never shows beyond the drawing area,
+  and the background lattice always fills the view; **Reset View** restores it
 - **Export** — a single TXT file containing nodes, elements, loads, and supports
 
 ## Quick start
@@ -31,8 +34,8 @@ no build step required.
 
 1. **Draw the domain** — place a closed polygon with clicks, sketch it freehand,
    or click **Import** in the Draw Mode panel to load an image.
-2. **Tune the mesh** — choose the grid type (square / triangular / hexagonal),
-   adjust the cell size and the boundary sampling ratio α.
+2. **Tune the mesh** — choose the grid type (square / triangular / hexagonal)
+   and adjust the cell size.
 3. **Set boundary conditions** — click **Set BCs** (the mesh becomes locked), then
    use the panel:
    - *Point Load / Support* — click nodes or drag a box to select several, press

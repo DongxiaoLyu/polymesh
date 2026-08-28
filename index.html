@@ -336,6 +336,7 @@
     <div class="topbar-actions">
       <button id="btnDemo"   class="btn btn-ghost">Demo</button>
       <button id="btnClear"  class="btn btn-ghost">Clear</button>
+      <button id="btnResetView" class="btn btn-ghost">Reset View</button>
       <button id="btnPhase"  class="btn btn-ghost">Set BCs</button>
       <button id="btnPanels" class="btn btn-ghost">Hide Panels</button>
       <button id="btnExport" class="btn btn-primary">Export TXT</button>
@@ -372,15 +373,6 @@
         <input type="range" id="cellSize" min="16" max="140" step="2" value="40" aria-label="Grid cell size" />
       </div>
 
-      <div class="panel-section">
-        <div class="label-row">
-          <label for="alpha">Boundary Sampling &alpha;</label>
-          <span class="badge" id="alphaVal">0.50</span>
-        </div>
-        <input type="range" id="alpha" min="0.1" max="2" step="0.05" value="0.5" aria-label="Boundary sampling ratio" />
-        <div class="hint" id="samplingDist">Sampling distance S = 20 px</div>
-      </div>
-
       <div class="panel-section toggle-row" id="snapRow">
         <label for="snapToggle">Snap to grid</label>
         <label class="switch">
@@ -393,7 +385,7 @@
     <aside class="panel panel-stats">
       <div class="stat"><span class="stat-num" id="statNodes">0</span><span class="stat-label">Nodes</span></div>
       <div class="stat"><span class="stat-num" id="statElems">0</span><span class="stat-label">Elements</span></div>
-      <div class="stat"><span class="stat-num" id="statSamples">0</span><span class="stat-label">Boundary samples</span></div>
+      <div class="stat"><span class="stat-num" id="statSamples">0</span><span class="stat-label">Boundary verts</span></div>
     </aside>
 
     <aside class="panel panel-legend">

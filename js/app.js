@@ -43,11 +43,11 @@
   const segButtons  = Array.from(document.querySelectorAll('#gridTypeSeg .seg'));
   const drawModeButtons = Array.from(document.querySelectorAll('#drawModeSeg .seg'));
   const cellSizeEl  = document.getElementById('cellSize');
-  const alphaEl     = document.getElementById('alpha');
   const snapEl      = document.getElementById('snapToggle');
   const snapRow     = document.getElementById('snapRow');
   const btnDemo     = document.getElementById('btnDemo');
   const btnClear    = document.getElementById('btnClear');
+  const btnResetView = document.getElementById('btnResetView');
   const btnExport   = document.getElementById('btnExport');
   const btnPanels   = document.getElementById('btnPanels');
   const importModal = document.getElementById('importModal');
@@ -59,8 +59,6 @@
   const hintBar     = document.getElementById('hintBar');
   const toastEl     = document.getElementById('toast');
   const cellSizeVal = document.getElementById('cellSizeVal');
-  const alphaVal    = document.getElementById('alphaVal');
-  const samplingDist= document.getElementById('samplingDist');
   const statNodes   = document.getElementById('statNodes');
   const statElems   = document.getElementById('statElems');
   const statSamples = document.getElementById('statSamples');
@@ -88,22 +86,23 @@
   const state = {
     gridType: 'square',
     cellSize: 40,
-    alpha: 0.5,
     snap: true,
     drawMode: 'point',      // 'point' (click-to-point) | 'freehand' (drag)
     freehandActive: false,  // currently tracing a freehand stroke
     drawing: [],            // vertices being placed (in-progress polygon)
     polygon: null,          // finalized polygon (array of {x,y}) or null
     cells: [],              // generated background grid (array of polygons)
+    viewCells: [],          // background lattice for the CURRENT view (fills the viewport)
     mesh: null,             // { nodes, elements, interiorCount, boundaryCount }
-    samples: [],            // resampled boundary sampling points
+    samples: [],            // polygon vertices used as the clip boundary
     phase: 'mesh',          // 'mesh' (draw/edit) | 'bc' (boundary conditions)
     pointLoads: [],         // { name, nodeIds[], fx, fy }
     distLoads: [],          // { name, edges: [[a,b],...], fx, fy }
     supports: [],           // { name, type: 'fixed'|'hinge', nodeIds[] }
     allEdges: [],           // cached Mesh.allEdges (boundary + interior) for the current mesh
     bcSel: null,            // live selection: { kind, nodes:Set, edges:Map, box, ... }
-    cursor: null,           // live pointer position (CSS px)
+    cursor: null,           // live pointer position (world coords)
+    view: { zoom: 1, ox: 0, oy: 0 },  // view transform: screen = world*zoom + o
     dpr: 1,
     w: 0, h: 0,
   };
@@ -129,10 +128,35 @@
     if (state.bcSel) cancelBcSelect();
     computeMesh();
     state.allEdges = state.mesh ? Mesh.allEdges(state.mesh) : [];
+    updateViewGrid();
     updateReadouts();
     renderBcList();
     renderer.render(state);
     if (hadConditions) showToast('Mesh changed — boundary conditions cleared');
+  }
+
+  /**
+   * Regenerate the background lattice so it fills whatever is currently
+   * visible (the mesh itself is built once from state.cells and never
+   * changes with the view). The extent is capped so extreme zoom-out
+   * cannot explode the cell count.
+   */
+  function updateViewGrid() {
+    const v = state.view;
+    const s = state.cellSize;
+    const m = s * 2;
+    let minX = -v.ox / v.zoom - m, maxX = (state.w - v.ox) / v.zoom + m;
+    let minY = -v.oy / v.zoom - m, maxY = (state.h - v.oy) / v.zoom + m;
+    const maxSpan = s * 130; // cap: at most ~130 x 130 = 17k cells (square)
+    if (maxX - minX > maxSpan) {
+      const cx = (minX + maxX) / 2;
+      minX = cx - maxSpan / 2; maxX = cx + maxSpan / 2;
+    }
+    if (maxY - minY > maxSpan) {
+      const cy = (minY + maxY) / 2;
+      minY = cy - maxSpan / 2; maxY = cy + maxSpan / 2;
+    }
+    state.viewCells = Grid.generateCells(state.gridType, { minX, minY, maxX, maxY }, s);
   }
 
   function computeMesh() {
@@ -142,18 +166,16 @@
       state.samples = [];
       return;
     }
-    const S = state.cellSize * state.alpha;
-    state.samples = G.resamplePolygon(poly, S);
     // Scale-adaptive spatial tolerance for classification and clipping.
     const spatialEps = state.cellSize * Constants.EPS_SCALE;
-    // classify against the light original polygon, clip against resampled.
-    state.mesh = Mesh.buildMesh(state.cells, poly, state.samples, spatialEps);
+    // Clip directly against the polygon vertices — the boundary geometry is
+    // fully defined by them, so no resampling is needed.
+    state.samples = poly;
+    state.mesh = Mesh.buildMesh(state.cells, poly, poly, spatialEps);
   }
 
   function updateReadouts() {
     cellSizeVal.textContent = Export.fmt(state.cellSize) + ' px';
-    alphaVal.textContent = state.alpha.toFixed(2);
-    samplingDist.textContent = 'Sampling distance S = ' + Export.fmt(state.cellSize * state.alpha) + ' px';
     statNodes.textContent = state.mesh ? state.mesh.nodes.length : 0;
     statElems.textContent = state.mesh ? state.mesh.elements.length : 0;
     statSamples.textContent = state.samples.length;
@@ -203,15 +225,58 @@
      5. Interaction (pointer & keyboard)
      ============================================================ */
 
-  /** Pointer position in CSS px, clamped to the canvas. */
+  /**
+   * Pointer position in WORLD coordinates (screen clamped to the canvas,
+   * then inverted through the view transform). Points are stored in world
+   * space, so panning/zooming never changes the mesh data — only the view.
+   */
   function toLocal(e) {
     const r = canvas.getBoundingClientRect();
-    // Clamp so clicks/drags outside the window cannot place invisible
-    // off-canvas vertices (especially during captured freehand).
+    // Clamp in screen space so clicks/drags outside the canvas cannot place
+    // invisible off-canvas vertices (especially during captured freehand).
+    const sx = Math.max(0, Math.min(state.w, e.clientX - r.left));
+    const sy = Math.max(0, Math.min(state.h, e.clientY - r.top));
+    const v = state.view;
     return {
-      x: Math.max(0, Math.min(state.w, e.clientX - r.left)),
-      y: Math.max(0, Math.min(state.h, e.clientY - r.top)),
+      x: (sx - v.ox) / v.zoom,
+      y: (sy - v.oy) / v.zoom,
     };
+  }
+
+  /** Convert a screen-space distance (px) into world units. */
+  function worldDist(d) {
+    return d / state.view.zoom;
+  }
+
+  /**
+   * Mouse-wheel zoom, centered on the cursor.
+   * Zoom-in is unlimited up to 32x for inspecting details; zoom-out is
+   * clamped at 1x so the view never shows beyond the drawing area (the
+   * canvas), which keeps the background lattice fully covering the view.
+   */
+  function onWheel(e) {
+    e.preventDefault();
+    const r = canvas.getBoundingClientRect();
+    const sx = e.clientX - r.left, sy = e.clientY - r.top;
+    const v = state.view;
+    const factor = Math.exp(-e.deltaY * 0.0015);
+    const nz = Math.max(1, Math.min(32, v.zoom * factor));
+    // Keep the world point under the cursor fixed while zooming.
+    const wx = (sx - v.ox) / v.zoom, wy = (sy - v.oy) / v.zoom;
+    v.zoom = nz;
+    v.ox = sx - wx * nz;
+    v.oy = sy - wy * nz;
+    updateViewGrid();   // keep the background lattice covering the view
+    scheduleRender();
+  }
+
+  /** Restore the initial 100% view. */
+  function resetView() {
+    state.view.zoom = 1;
+    state.view.ox = 0;
+    state.view.oy = 0;
+    updateViewGrid();
+    scheduleRender();
   }
 
   /**
@@ -224,7 +289,7 @@
   function isSecondClickOfDoubleClick(e, p) {
     const now = e.timeStamp;
     const wasQuick = lastPress && (now - lastPress.time < 350);
-    const wasClose = lastPress && (V.dist(p, lastPress) < 8);
+    const wasClose = lastPress && (V.dist(p, lastPress) < worldDist(8));
     lastPress = { time: now, x: p.x, y: p.y };
     return wasQuick && wasClose;
   }
@@ -235,10 +300,11 @@
     if (state.phase === 'bc') { bcPointerMove(e); return; }
 
     if (state.freehandActive) {
-      // Sample the stroke, thinning dense points by a minimum spacing.
+      // Sample the stroke, thinning dense points by a minimum spacing
+      // (a screen-space distance, converted to world units).
       const pts = state.drawing;
       const last = pts[pts.length - 1];
-      if (!last || V.dist(state.cursor, last) >= FREEHAND_MIN_DIST) {
+      if (!last || V.dist(state.cursor, last) >= worldDist(FREEHAND_MIN_DIST)) {
         pts.push({ x: state.cursor.x, y: state.cursor.y });
       }
       scheduleRender();
@@ -269,7 +335,7 @@
     const p = Grid.snapPoint(toLocal(e), state.gridType, state.cellSize, state.snap);
     if (isSecondClickOfDoubleClick(e, p)) return; // dblclick will close
     const pts = state.drawing;
-    if (pts.length >= 3 && V.dist(p, pts[0]) < 12) { finishPolygon(); return; }
+    if (pts.length >= 3 && V.dist(p, pts[0]) < worldDist(12)) { finishPolygon(); return; }
     if (pts.length && G.snapKey(p) === G.snapKey(pts[pts.length - 1])) return;
     pts.push(p);
     syncPanels();
@@ -346,6 +412,7 @@
     state.cursor = null;
     syncPanels();
     setHint();
+    resetView();   // a fresh domain should be seen at 100%
     refresh();
   }
 
@@ -372,6 +439,7 @@
     state.samples = [];
     state.cursor = null;
     setHint();
+    resetView();
     refresh();
   }
 
@@ -385,6 +453,7 @@
     state.polygon = G.simplifyPolygon(Demo.buildPolygon(state.w, state.h));
     state.cursor = null;
     setHint();
+    resetView();
     refresh();
   }
 
@@ -536,7 +605,6 @@
     segButtons.forEach(b => { b.disabled = locked; });
     drawModeButtons.forEach(b => { b.disabled = locked; });
     cellSizeEl.disabled = locked;
-    alphaEl.disabled = locked;
     snapEl.disabled = locked || state.drawMode === 'freehand';
   }
 
@@ -585,7 +653,7 @@
 
   function bcPointerMove(e) {
     if (!state.bcSel || !state.bcSel.dragStart) return;
-    if (!state.bcSel.dragging && V.dist(state.bcSel.dragStart, state.cursor) > Constants.BC_DRAG_THRESHOLD) {
+    if (!state.bcSel.dragging && V.dist(state.bcSel.dragStart, state.cursor) > worldDist(Constants.BC_DRAG_THRESHOLD)) {
       state.bcSel.dragging = true;
     }
     if (state.bcSel.dragging) {
@@ -616,14 +684,14 @@
     const mesh = state.mesh;
     if (!mesh) return;
     if (kind === 'distload') {
-      const idx = Mesh.nearestEdge(state.allEdges, mesh, p, Constants.BC_SELECT_RADIUS);
+      const idx = Mesh.nearestEdge(state.allEdges, mesh, p, worldDist(Constants.BC_SELECT_RADIUS));
       if (idx < 0) { showToast('No mesh edge near the click'); return; }
       const [a, b] = state.allEdges[idx];
       const key = a < b ? a + '_' + b : b + '_' + a;
       if (state.bcSel.edges.has(key)) state.bcSel.edges.delete(key);
       else state.bcSel.edges.set(key, [a, b]);
     } else {
-      const id = Mesh.nearestNode(mesh, p, Constants.BC_SELECT_RADIUS);
+      const id = Mesh.nearestNode(mesh, p, worldDist(Constants.BC_SELECT_RADIUS));
       if (id < 0) { showToast('No node near the click'); return; }
       if (state.bcSel.nodes.has(id)) state.bcSel.nodes.delete(id);
       else state.bcSel.nodes.add(id);
@@ -831,16 +899,11 @@
     scheduleRefresh();
   });
 
-  alphaEl.addEventListener('input', () => {
-    state.alpha = parseFloat(alphaEl.value);
-    updateSliderFill(alphaEl);
-    scheduleRefresh();
-  });
-
   snapEl.addEventListener('change', () => { state.snap = snapEl.checked; });
 
   btnDemo.addEventListener('click', loadDemo);
   btnClear.addEventListener('click', clearPolygon);
+  btnResetView.addEventListener('click', resetView);
   btnExport.addEventListener('click', exportTxt);
   btnPanels.addEventListener('click', togglePanels);
 
@@ -884,6 +947,7 @@
   canvas.addEventListener('pointerup', onPointerUp);
   canvas.addEventListener('pointercancel', onPointerCancel);
   canvas.addEventListener('dblclick', onDblClick);
+  canvas.addEventListener('wheel', onWheel, { passive: false });
   window.addEventListener('keydown', onKeydown);
 
   new ResizeObserver(() => scheduleResize()).observe(stage);
@@ -892,7 +956,6 @@
      11. Init
      ============================================================ */
   updateSliderFill(cellSizeEl);
-  updateSliderFill(alphaEl);
   resize();
   loadDemo();
   renderBcList();
