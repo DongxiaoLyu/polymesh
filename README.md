@@ -18,6 +18,13 @@ locally in your browser.
   zoom-out is clamped at 1× so the view never shows beyond the drawing area,
   and the background lattice always fills the view; **Reset View** restores it
 - **Export** — a single TXT file containing nodes, elements, loads, and supports
+- **Solver (under construction)** — click **Solver Start** (bottom-right) to switch into
+  the solver phase: pre-processing components are hidden and solver components take over.
+  Planned blocks: **2D Poisson Equation** (first), **2D Elasticity**, **2D Dynamics** —
+  each developed as an independent module with its own display fields and vertical
+  heatmap legend. Solver boundary conditions are set on the domain **boundary edges**
+  only (Dirichlet temperature / Neumann heat flux); unassigned edges default to
+  **zero-flux Neumann (insulated)**
 
 ## Quick start
 
@@ -43,6 +50,8 @@ no build step required.
    - *Distributed Load* — click or box-select mesh edges, then name the group and
      enter the vector (per unit length, FEM convention: **+X right, +Y up**).
 4. **Export** — click **Export TXT** to download `mesh.txt`.
+5. **Solve (coming soon)** — click **Solver Start** in the bottom-right corner to enter
+   the solver phase (pre-processing UI is hidden while the solver is active).
 
 ## Output format
 

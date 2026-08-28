@@ -62,7 +62,9 @@ function makeEl(id) {
     files: [],
     listeners: {},
     addEventListener(type, fn) { (this.listeners[type] = this.listeners[type] || []).push(fn); },
+    setAttribute(name, value) { this[name] = value; },
     appendChild(child) { this.children.push(child); return child; },
+    replaceChildren(...kids) { this.children.length = 0; for (const k of kids) this.children.push(k); },
     focus() {},
     select() {},
     getContext() { return makeCtx(); },
@@ -75,7 +77,12 @@ function makeEl(id) {
 class Path2DStub { moveTo() {} lineTo() {} arc() {} closePath() {} }
 global.Path2D = Path2DStub;
 global.ResizeObserver = class { observe() {} disconnect() {} };
-global.requestAnimationFrame = cb => { cb(); return 1; };
+// requestAnimationFrame: execute the callback SYNCHRONOUSLY (the tests
+// rely on immediate execution), but return a falsy token — app.js stores
+// the token in rafId as a coalescing flag, and in a real browser the
+// callback (which clears rafId) runs next frame. Returning a truthy value
+// here would leave rafId stuck and swallow every later scheduleRender.
+global.requestAnimationFrame = cb => { global._rafCount = (global._rafCount || 0) + 1; cb(); return 0; };
 global.devicePixelRatio = 1;
 global.addEventListener = (type, fn) => {   // app.js: window.addEventListener('keydown', ...)
   global._listeners = global._listeners || {};
@@ -112,7 +119,10 @@ global.document = {
     if (tag === 'a') return { href: '', download: '', click() {}, remove() {} };
     return makeEl('dynamic-' + tag);
   },
-  body: { appendChild() {} },
+  body: {
+    appendChild() {},
+    classList: { add() {}, remove() {}, toggle() {}, contains() { return false; } },
+  },
 };
 
 /* ---------- Boot the real app (init runs immediately) ---------- */
@@ -127,6 +137,13 @@ require('./js/export.js');
 require('./js/demo.js');
 require('./js/image.js');
 require('./js/app.js');
+require('./js/solver/solver-ui.js');
+require('./js/solver/solver-bc.js');
+require('./js/solver/matrix.js');
+require('./js/solver/poisson/vem.js');
+require('./js/solver/poisson/assembly.js');
+require('./js/solver/poisson/post.js');
+require('./js/solver/poisson/ui.js');
 
 console.log('OK: app booted (resize + loadDemo + listeners)');
 
@@ -246,6 +263,183 @@ console.log('OK: import modal opens via Draw Mode "Import" segment, examples dra
   console.log('OK: wheel zoom + Reset View work, selection accurate after view changes');
   global._listeners.keydown[0](key('Escape'));       // close the modal
   btnPhase.listeners.click[0]();                     // back to mesh phase
+
+  /* ---------- Exercise: solver phase (Solver Start button) ---------- */
+
+  const btnSolver = elements.get('btnSolver');
+  if (!btnSolver || !btnSolver.listeners.click || !btnSolver.listeners.click.length) {
+    throw new Error('Solver Start button not wired');
+  }
+  btnSolver.listeners.click[0]();                  // enter the solve phase
+  if (!stageEl.classList.contains('solve')) throw new Error('stage did not enter solve phase');
+  if (btnSolver.textContent !== 'Exit Solver') throw new Error('solver button text wrong: ' + btnSolver.textContent);
+  if (!btnSolver.classList.contains('btn-primary')) throw new Error('solver button should be primary in solve phase');
+  if (elements.get('btnDemo').disabled !== true) throw new Error('Demo should be locked in solve phase');
+  btnSolver.listeners.click[0]();                  // exit back to the mesh phase
+  if (stageEl.classList.contains('solve')) throw new Error('stage still in solve phase after exit');
+  if (btnSolver.textContent !== 'Solver Start') throw new Error('solver button text wrong after exit: ' + btnSolver.textContent);
+  console.log('OK: solver phase entered & exited via Solver Start button');
+
+  /* ---------- Exercise: solver shell UI (dropdowns + legend) ---------- */
+
+  const selProblem = elements.get('solverProblemSel');
+  const selField = elements.get('solverFieldSel');
+  if (selProblem.children.length !== 3) throw new Error('problem dropdown should list 3 blocks, got ' + selProblem.children.length);
+  if (selProblem.children[0].value !== 'poisson' || selProblem.children[0].disabled !== false) throw new Error('poisson should be selectable');
+  if (selProblem.children[0].textContent !== '2D Poisson Equation') throw new Error('poisson label wrong: ' + selProblem.children[0].textContent);
+  if (selProblem.children[1].disabled !== true) throw new Error('elastic should be disabled (coming soon)');
+  if (selProblem.children[2].disabled !== true) throw new Error('dynamics should be disabled (coming soon)');
+  if (selProblem.value !== 'poisson') throw new Error('default problem should be poisson, got ' + selProblem.value);
+  if (selField.children.length !== 2) throw new Error('poisson should expose 2 fields, got ' + selField.children.length);
+  if (elements.get('solverLegendCaption').textContent !== 'Temperature [°C]') throw new Error('legend caption wrong: ' + elements.get('solverLegendCaption').textContent);
+  if (elements.get('solverLegendMin').textContent !== '—' || elements.get('solverLegendMax').textContent !== '—') throw new Error('legend range should be empty before solving');
+  if (!elements.get('btnSolve').classList.contains('solver-blocked')) throw new Error('Solve button should be blocked (faded) until a Temperature BC exists');
+
+  // switch display field → legend caption changes
+  selField.value = 'flux';
+  selField.listeners.change[0]();
+  if (elements.get('solverLegendCaption').textContent !== 'Heat Flux [W/m²]') throw new Error('legend caption wrong after field switch: ' + elements.get('solverLegendCaption').textContent);
+
+  // switch problem → field list + legend update
+  selProblem.value = 'elastic';
+  selProblem.listeners.change[0]();
+  if (selField.children.length !== 3) throw new Error('elastic should expose 3 fields, got ' + selField.children.length);
+  if (elements.get('solverLegendCaption').textContent !== 'Displacement [mm]') throw new Error('legend caption wrong after problem switch: ' + elements.get('solverLegendCaption').textContent);
+
+  // dynamics → 4 fields (displacement / velocity / acceleration / stress)
+  selProblem.value = 'dynamics';
+  selProblem.listeners.change[0]();
+  if (selField.children.length !== 4) throw new Error('dynamics should expose 4 fields, got ' + selField.children.length);
+  if (elements.get('solverLegendCaption').textContent !== 'Displacement [mm]') throw new Error('legend caption wrong after dynamics switch: ' + elements.get('solverLegendCaption').textContent);
+
+  // back to poisson
+  selProblem.value = 'poisson';
+  selProblem.listeners.change[0]();
+  if (elements.get('solverLegendCaption').textContent !== 'Temperature [°C]') throw new Error('legend caption wrong after switching back: ' + elements.get('solverLegendCaption').textContent);
+  console.log('OK: solver shell dropdowns + heatmap legend follow problem & field');
+
+  /* ---------- Exercise: solver parameters (k, f) ---------- */
+
+  const paramsWrap = elements.get('solverParams');
+  if (paramsWrap.children.length !== 3) throw new Error('poisson should render 2 params + f note, got ' + paramsWrap.children.length);
+  const kInput = paramsWrap.children[0].children[1];
+  const fInput = paramsWrap.children[1].children[1];
+  if (kInput.value !== '10' || fInput.value !== '10') throw new Error('param defaults wrong: k=' + kInput.value + ' f=' + fInput.value);
+  if (!/Uniform over the whole domain/.test(paramsWrap.children[2].textContent)) throw new Error('f note missing: ' + paramsWrap.children[2].textContent);
+  fInput.value = '5';
+  fInput.listeners.input[0]();
+  const paramsNow = global.MeshStudio.SolverUI.currentParams();
+  if (paramsNow.f !== 5 || paramsNow.k !== 10) throw new Error('param values wrong: ' + JSON.stringify(paramsNow));
+  // switching problem resets params to the new block's defaults
+  selProblem.value = 'elastic';
+  selProblem.listeners.change[0]();
+  if (paramsWrap.children.length !== 0) throw new Error('elastic should have no params, got ' + paramsWrap.children.length);
+  selProblem.value = 'poisson';
+  selProblem.listeners.change[0]();
+  if (paramsWrap.children.length !== 3) throw new Error('poisson params not restored, got ' + paramsWrap.children.length);
+  if (paramsWrap.children[1].children[1].value !== '10') throw new Error('param f should reset to default after problem switch');
+  console.log('OK: solver parameters (k, f) with defaults, problem-scoped');
+
+  /* ---------- Exercise: solver boundary conditions (Poisson) ---------- */
+
+  btnSolver.listeners.click[0]();                  // enter the solve phase
+  if (!stageEl.classList.contains('solve')) throw new Error('stage did not enter solve phase (BC test)');
+  if (!/boundary/i.test(elements.get('hintBar').textContent)) throw new Error('solve hint should mention boundary edges: ' + elements.get('hintBar').textContent);
+
+  const bcButtons = elements.get('solverBcButtons');
+  if (bcButtons.children.length !== 2) throw new Error('poisson should expose 2 BC buttons, got ' + bcButtons.children.length);
+
+  // clicking the blocked Solve button must explain WHY it does nothing
+  elements.get('btnSolve').listeners.click[0]();
+  const blockedToast = elements.get('toast').textContent;
+  if (blockedToast !== 'At least one Dirichlet boundary condition is required.') throw new Error('blocked solve toast wrong: ' + blockedToast);
+
+  // Temperature (Dirichlet) via box selection over the whole domain
+  bcButtons.children[0].listeners.click[0]();
+  canvasEl.listeners.pointermove[0]({ clientX: 100, clientY: 100, pointerId: 11 });
+  canvasEl.listeners.pointerdown[0]({ clientX: 100, clientY: 100, pointerId: 11 });
+  canvasEl.listeners.pointermove[0]({ clientX: 700, clientY: 500, pointerId: 11 });
+  canvasEl.listeners.pointerup[0]({});
+  global._listeners.keydown[0](key('Enter'));
+  if (!elements.get('solverCondModal').classList.contains('visible')) throw new Error('solver BC modal did not open');
+  elements.get('solverCondName').value = 'HotEdge';
+  elements.get('solverCondValue').value = '100';
+  elements.get('btnSolverCondOk').listeners.click[0]();
+  if (elements.get('solverCondModal').classList.contains('visible')) throw new Error('solver BC modal did not close');
+  if (!/HotEdge/.test(textOf(elements.get('solverBcList')))) throw new Error('temperature group not listed: ' + textOf(elements.get('solverBcList')));
+  if (elements.get('btnSolve').classList.contains('solver-blocked')) throw new Error('Solve should be enabled once a Temperature BC exists');
+
+  // every selected edge must be a boundary edge (interior edges are NOT selectable)
+  const ms = global.MeshStudio;
+  const bndKeys = new Set(ms.Mesh.boundaryEdges(ms.App.state.mesh).map(([a, b]) => (a < b ? a + '_' + b : b + '_' + a)));
+  const bcGroups = ms.SolverBC.groups;
+  if (bcGroups.length !== 1) throw new Error('expected 1 BC group, got ' + bcGroups.length);
+  for (const g of bcGroups) for (const [a, b] of g.edges) {
+    const kk = a < b ? a + '_' + b : b + '_' + a;
+    if (!bndKeys.has(kk)) throw new Error('non-boundary edge selected: ' + kk);
+  }
+  console.log('OK: temperature (Dirichlet) group on boundary edges only, Solve enabled');
+
+  /* ---------- Exercise: run the real Poisson solve ---------- */
+
+  // The constant-Dirichlet check below requires f = 0 (with the new default
+  // f = 10 the interior would heat up above 100); set it explicitly.
+  const fSolveInput = paramsWrap.children[1].children[1];
+  fSolveInput.value = '0';
+  fSolveInput.listeners.input[0]();
+  elements.get('btnSolve').listeners.click[0]();
+  const sol = ms.App.state.solution;
+  if (!sol || !sol.fields || !sol.fields.temperature) throw new Error('no solution after Solve');
+  const tField = sol.fields.temperature;
+  if (!(Math.abs(tField.min - 100) < 1e-6 && Math.abs(tField.max - 100) < 1e-6)) {
+    throw new Error('constant-Dirichlet solution wrong: ' + tField.min + '..' + tField.max);
+  }
+  if (sol.fields.flux.max > 1e-6) throw new Error('flux should vanish for a constant solution, got ' + sol.fields.flux.max);
+  if (!/Solved/.test(elements.get('toast').textContent)) throw new Error('solve toast missing: ' + elements.get('toast').textContent);
+  if (elements.get('solverLegendMin').textContent === '—') throw new Error('legend min not updated after solve');
+  console.log('OK: real Poisson solve runs (constant Dirichlet reproduced, u=' + tField.min + ')');
+
+  // switching the display field must re-render the heatmap (and the legend):
+  // for the constant solution the flux range is 0..0 while T is 100..100
+  const rafBefore = global._rafCount || 0;
+  selField.value = 'flux';
+  selField.listeners.change[0]();
+  if ((global._rafCount || 0) <= rafBefore) throw new Error('field switch did not schedule a re-render (stale heatmap)');
+  if (elements.get('solverLegendCaption').textContent !== 'Heat Flux [W/m²]') throw new Error('legend caption not flux after switch: ' + elements.get('solverLegendCaption').textContent);
+  if (elements.get('solverLegendMin').textContent !== '0' || elements.get('solverLegendMax').textContent !== '0') {
+    throw new Error('legend should show flux range 0..0 for the constant solution, got ' +
+      elements.get('solverLegendMin').textContent + '..' + elements.get('solverLegendMax').textContent);
+  }
+  console.log('OK: display-field switch re-renders the heatmap (flux legend 0..0)');
+
+  // Heat Flux (Neumann) group
+  bcButtons.children[1].listeners.click[0]();
+  canvasEl.listeners.pointermove[0]({ clientX: 100, clientY: 100, pointerId: 12 });
+  canvasEl.listeners.pointerdown[0]({ clientX: 100, clientY: 100, pointerId: 12 });
+  canvasEl.listeners.pointermove[0]({ clientX: 700, clientY: 500, pointerId: 12 });
+  canvasEl.listeners.pointerup[0]({});
+  global._listeners.keydown[0](key('Enter'));
+  if (!elements.get('solverCondModal').classList.contains('visible')) throw new Error('flux modal did not open');
+  elements.get('solverCondName').value = 'Flux1';
+  elements.get('solverCondValue').value = '50';
+  elements.get('btnSolverCondOk').listeners.click[0]();
+  if (!/Flux1/.test(textOf(elements.get('solverBcList')))) throw new Error('flux group not listed');
+  if (ms.SolverBC.groups.length !== 2) throw new Error('expected 2 BC groups, got ' + ms.SolverBC.groups.length);
+  for (const g of ms.SolverBC.groups) for (const [a, b] of g.edges) {
+    const kk = a < b ? a + '_' + b : b + '_' + a;
+    if (!bndKeys.has(kk)) throw new Error('non-boundary edge selected in flux group: ' + kk);
+  }
+  console.log('OK: heat flux (Neumann) group added (boundary-only)');
+
+  // Esc cancels a live selection; a delete removes a group; exit the phase
+  bcButtons.children[0].listeners.click[0]();
+  global._listeners.keydown[0](key('Escape'));
+  const delBtn = elements.get('solverBcList').children[0].children[1];
+  delBtn.listeners.click[0]();
+  if (ms.SolverBC.groups.length !== 1) throw new Error('group delete failed, got ' + ms.SolverBC.groups.length);
+  btnSolver.listeners.click[0]();                  // back to mesh phase
+  if (stageEl.classList.contains('solve')) throw new Error('stage still in solve phase (BC test)');
+  console.log('OK: solver BC selection, grouping, delete, gating & boundary-only restriction');
 
   console.log('DOM smoke OK');
 })().catch(e => {

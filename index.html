@@ -82,6 +82,13 @@
   .btn-primary:hover { background: var(--accent-press); }
   .btn-ghost { background: rgba(255,255,255,0.6); color: var(--text); border-color: var(--hairline); }
   .btn-ghost:hover { background: rgba(0,0,0,0.05); }
+  /* Faded, non-actionable button that STAYS clickable — a click must be
+     able to explain WHY it is blocked (a truly disabled button swallows
+     all click events). Used by the Solve button before the required
+     boundary conditions exist. */
+  .btn.solver-blocked { opacity: 0.45; cursor: default; }
+  .btn.solver-blocked:hover { background: var(--accent); }
+  .btn.solver-blocked:active { transform: none; }
 
   /* ---------- Stage ---------- */
   .stage { position: relative; height: calc(100% - 64px); }
@@ -287,7 +294,14 @@
     font-size: 12px; padding: 5px 2px; border-top: 1px solid var(--hairline);
   }
   .bc-item:first-child { border-top: none; }
-  .bc-del { padding: 1px 8px; font-size: 12px; }
+  /* The name may wrap onto several lines; the delete button stays compact
+     (flex: 0 0 auto) and is vertically centered against the wrapped text. */
+  .bc-del {
+    flex: 0 0 auto; min-width: 0;
+    margin-left: 6px;
+    padding: 2px 7px; font-size: 12px; line-height: 1.4;
+    border-radius: 6px;
+  }
   .bc-empty { font-size: 11px; color: var(--text-2); padding: 6px 2px; }
 
   /* ---------- Condition modal (name / vector / type) ---------- */
@@ -305,6 +319,84 @@
   .cond-vec .cond-input { flex: 1; }
   .cond-type { margin-bottom: 12px; }
 
+  /* ---------- Solver phase ---------- */
+  /* Floating "Solver Start" launcher at the bottom-right of the stage.
+     Clicking it hides every pre-processing component and reveals the
+     solver components (the 'solve' phase). */
+  .btn-solver {
+    position: absolute;
+    right: 20px; bottom: 16px;
+    z-index: 15;
+    box-shadow: 0 4px 16px rgba(0,113,227,0.3);
+  }
+  /* Solve phase: pre-processing components (top bar actions + panels)
+     are hidden, solver components are shown. */
+  body.solve-mode .topbar-actions { display: none; }
+  .stage.solve .panel-controls,
+  .stage.solve .panel-stats,
+  .stage.solve .panel-legend {
+    opacity: 0; visibility: hidden; pointer-events: none;
+  }
+  .panel-solver, .panel-solver-info {
+    opacity: 0; visibility: hidden; pointer-events: none;
+  }
+  .stage.solve .panel-solver,
+  .stage.solve .panel-solver-info {
+    opacity: 1; visibility: visible; pointer-events: auto;
+  }
+  /* The solver panel lives where the Draw Mode panel did (top-left). */
+  .panel-solver      { top: 16px; left: 16px; width: 288px; max-height: calc(100% - 32px); overflow-y: auto; }
+  .panel-solver-info { top: 16px; right: 16px; min-width: 168px; padding: 12px 14px; }
+  /* Only the Solve button stretches full-width. (Do NOT use
+     `.panel-solver .btn` — that would also stretch the compact ✕ delete
+     buttons inside the BC list to 100%.) The Add-… BC buttons already
+     get full width from `.bc-actions .btn`. */
+  #btnSolve { width: 100%; }
+
+  /* Dropdowns inside the solver panel (problem type / display field). */
+  select.cond-input {
+    appearance: none; -webkit-appearance: none;
+    background-image: url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'%3E%3Cpath d='M0 0l5 6 5-6z' fill='%236e6e73'/%3E%3C/svg%3E");
+    background-repeat: no-repeat; background-position: right 10px center;
+    padding-right: 28px; cursor: pointer;
+  }
+
+  /* Parameter inputs (solver panel: conductivity k, heat source f, …). */
+  .param-row {
+    display: flex; align-items: center; justify-content: space-between;
+    gap: 8px; margin-bottom: 8px;
+  }
+  /* Same dark tone as the Display Field dropdown text (--text), not gray. */
+  .param-row .param-label { font-size: 12.5px; color: var(--text); font-weight: 500; }
+  .param-input {
+    width: 96px; margin-bottom: 0; padding: 5px 8px; text-align: right;
+  }
+
+  /* Heatmap legend (top-right results panel) — VERTICAL color bar with the
+     max label ABOVE and the min label BELOW the bar (conventional colorbar
+     layout; labels are no longer side-by-side). */
+  .legend-col {
+    display: flex; flex-direction: column; align-items: center;
+    gap: 4px; margin-top: 8px;
+  }
+  .legend-gradient {
+    width: 14px; height: 120px; border-radius: 7px;
+    border: 1px solid rgba(255, 255, 255, 0.6);
+    background: linear-gradient(to top, #ccc, #ccc); /* replaced by JS */
+  }
+  .legend-val {
+    font-size: 11px; color: var(--text-2);
+    font-variant-numeric: tabular-nums;
+  }
+  .legend-caption {
+    font-size: 11px; color: var(--text-2); margin-top: 8px;
+    text-align: center;
+  }
+
+  /* The BC conditions panel sits above the solver launcher (both live on
+     the right side) so they never overlap. */
+  .panel-conditions { bottom: 72px; }
+
   /* ---------- Responsive ---------- */
   @media (max-width: 720px) {
     .topbar { padding: 0 12px; }
@@ -315,6 +407,8 @@
     .hint-bar { bottom: 132px; }
     .stage.bc .panel-controls { display: none; }          /* BC phase: swap panels */
     .panel-conditions { left: 10px; right: 10px; top: 10px; bottom: auto; width: auto; }
+    .panel-solver { left: 10px; right: 10px; top: 10px; width: auto; }
+    .panel-solver-info { left: 10px; right: 10px; top: auto; bottom: 10px; min-width: 0; }
   }
 </style>
 </head>
@@ -402,6 +496,51 @@
     <div class="toast" id="toast"></div>
     <div class="hint-bar" id="hintBar">Click to place polygon vertices · double-click, Enter, or click the first point to close</div>
 
+    <!-- Solver launcher: bottom-right, toggles the 'solve' phase.
+         In the solve phase the pre-processing components are hidden and
+         the solver components below are revealed. -->
+    <button id="btnSolver" class="btn btn-ghost btn-solver" title="Enter the solver phase">Solver Start</button>
+
+    <!-- Solver phase components (hidden until "Solver Start" is clicked).
+         The shell UI (problem / display-field dropdowns, Solve button,
+         heatmap legend) is driven by js/solver/solver-ui.js; each solver
+         block (js/solver/<problem>/) registers its metadata there. -->
+    <aside class="panel panel-solver" id="solverPanel">
+      <span class="section-label">Solver</span>
+      <div class="panel-section">
+        <label class="section-label" for="solverProblemSel">Problem</label>
+        <select id="solverProblemSel" class="cond-input" aria-label="Problem type"></select>
+      </div>
+      <div class="panel-section">
+        <label class="section-label" for="solverFieldSel">Display Field</label>
+        <select id="solverFieldSel" class="cond-input" aria-label="Heatmap display field"></select>
+      </div>
+      <div class="panel-section" id="solverParamsSection">
+        <span class="section-label">Parameters</span>
+        <div id="solverParams"></div>
+      </div>
+      <div class="panel-section" id="solverBcSection">
+        <span class="section-label">Boundary Conditions</span>
+        <p class="hint" id="solverBcDefault">Default: all boundary edges are zero-flux Neumann (insulated).</p>
+        <div class="bc-actions" id="solverBcButtons"></div>
+        <div class="bc-list" id="solverBcList"></div>
+      </div>
+      <div class="panel-section">
+        <button id="btnSolve" class="btn btn-primary" title="Solve">Solve</button>
+      </div>
+      <p class="hint" id="solverHint">Solver modules are under construction — 2D Poisson Equation is planned first.</p>
+    </aside>
+
+    <aside class="panel panel-solver-info" id="solverInfoPanel">
+      <span class="section-label">Heatmap Legend</span>
+      <div class="legend-col">
+        <span class="legend-val" id="solverLegendMax">—</span>
+        <div class="legend-gradient" id="solverLegendBar"></div>
+        <span class="legend-val" id="solverLegendMin">—</span>
+      </div>
+      <div class="legend-caption" id="solverLegendCaption">Select a problem &amp; display field</div>
+    </aside>
+
     <div class="modal-overlay" id="importModal" role="dialog" aria-modal="true" aria-label="Import image instructions">
       <div class="modal">
         <h2>Import Image</h2>
@@ -462,6 +601,25 @@
         </div>
       </div>
     </div>
+
+    <!-- Solver BC modal: scalar value (temperature / heat flux) on
+         boundary edges, driven by js/solver/solver-bc.js. -->
+    <div class="modal-overlay" id="solverCondModal" role="dialog" aria-modal="true" aria-label="Solver boundary condition value">
+      <div class="modal modal-narrow">
+        <h2 id="solverCondTitle">Temperature</h2>
+        <div class="cond-form">
+          <div class="label-row"><label for="solverCondName">Name</label></div>
+          <input type="text" id="solverCondName" class="cond-input" autocomplete="off" />
+          <div class="label-row"><label id="solverCondValueLabel" for="solverCondValue">Value (u, °C)</label></div>
+          <input type="number" id="solverCondValue" class="cond-input" step="any" />
+          <p class="modal-hint" id="solverCondCount"></p>
+        </div>
+        <div class="modal-actions">
+          <button id="btnSolverCondOk" class="btn btn-primary">OK</button>
+          <button id="btnSolverCondCancel" class="btn btn-ghost">Cancel</button>
+        </div>
+      </div>
+    </div>
   </main>
 
 <!-- ============================================================
@@ -476,6 +634,19 @@
        8. js/demo.js      — demo polygon data
        9. js/image.js     — image import: bitmap → contour polygon
       10. js/app.js       — controller (state, DOM, interaction)
+      11. js/solver/solver-ui.js — shared solve-phase shell (problem / field
+                                   dropdowns, Solve button, heatmap legend)
+      12. js/solver/solver-bc.js — solver boundary conditions: boundary-edge
+                                   selection, groups, scalar-value modal,
+                                   canvas markers, Solve gating
+      13. js/solver/matrix.js     — shared sparse linear algebra (CRS + CG)
+      14. js/solver/poisson/vem.js      — Poisson VEM element stiffness
+      15. js/solver/poisson/assembly.js — Poisson assembly + Dirichlet/Neumann
+      16. js/solver/poisson/post.js     — Poisson post-processing (T, flux)
+      17. js/solver/poisson/ui.js       — Poisson block wiring + heatmap
+     Future problem blocks (js/solver/<problem>/) load AFTER the shared
+     solver modules and register via MeshStudio.SolverUI.registerBlock;
+     each ships its own <script> tag here when ready.
      ============================================================ -->
 <script src="js/constants.js"></script>
 <script src="js/geometry.js"></script>
@@ -487,5 +658,12 @@
 <script src="js/demo.js"></script>
 <script src="js/image.js"></script>
 <script src="js/app.js"></script>
+<script src="js/solver/solver-ui.js"></script>
+<script src="js/solver/solver-bc.js"></script>
+<script src="js/solver/matrix.js"></script>
+<script src="js/solver/poisson/vem.js"></script>
+<script src="js/solver/poisson/assembly.js"></script>
+<script src="js/solver/poisson/post.js"></script>
+<script src="js/solver/poisson/ui.js"></script>
 </body>
 </html>

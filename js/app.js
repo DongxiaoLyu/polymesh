@@ -63,6 +63,7 @@
   const statElems   = document.getElementById('statElems');
   const statSamples = document.getElementById('statSamples');
   const btnPhase    = document.getElementById('btnPhase');
+  const btnSolver   = document.getElementById('btnSolver');
   const controlsPanel = document.getElementById('controlsPanel');
   const btnAddPointLoad = document.getElementById('btnAddPointLoad');
   const btnAddDistLoad  = document.getElementById('btnAddDistLoad');
@@ -95,7 +96,7 @@
     viewCells: [],          // background lattice for the CURRENT view (fills the viewport)
     mesh: null,             // { nodes, elements, interiorCount, boundaryCount }
     samples: [],            // polygon vertices used as the clip boundary
-    phase: 'mesh',          // 'mesh' (draw/edit) | 'bc' (boundary conditions)
+    phase: 'mesh',          // 'mesh' (draw/edit) | 'bc' (conditions) | 'solve'
     pointLoads: [],         // { name, nodeIds[], fx, fy }
     distLoads: [],          // { name, edges: [[a,b],...], fx, fy }
     supports: [],           // { name, type: 'fixed'|'hinge', nodeIds[] }
@@ -105,9 +106,21 @@
     view: { zoom: 1, ox: 0, oy: 0 },  // view transform: screen = world*zoom + o
     dpr: 1,
     w: 0, h: 0,
+    solution: null,     // solver results (future): { u, flux, ... } or null
+    renderHooks: [],    // extra draw callbacks run by renderer ON TOP (BC markers, …)
+    underlayHooks: [],  // extra draw callbacks run BELOW the mesh (heatmap, …)
+    meshPlain: false,   // solve phase: draw the mesh plain — no fills, no
+                        // interior cell edges, only the outer boundary outline
   };
 
   const renderer = Renderer.createRenderer(ctx);
+
+  /**
+   * Phase-plugin registry: future solver controllers (js/solver/<problem>/)
+   * register pointer/keyboard/lifecycle handlers for a phase here, so the
+   * app can hand the phase over without app.js knowing any solver details.
+   */
+  const phaseHandlers = {};
 
   /* ============================================================
      3. Pipeline — regenerate grid, mesh, readouts, canvas
@@ -125,6 +138,7 @@
     state.pointLoads = [];
     state.distLoads = [];
     state.supports = [];
+    state.solution = null;   // solved results reference node ids too — invalidate with the mesh
     if (state.bcSel) cancelBcSelect();
     computeMesh();
     state.allEdges = state.mesh ? Mesh.allEdges(state.mesh) : [];
@@ -213,9 +227,11 @@
   const HINT_DONE     = 'Mesh generated — adjust the controls or press Clear to redraw';
   const HINT_BC_IDLE  = 'Boundary-condition phase — mesh is locked. Add loads & supports from the panel.';
   const HINT_BC_SELECT = 'Click nodes/edges or drag a box to select · Enter to confirm · Esc to cancel';
+  const HINT_SOLVER   = 'Solver phase — mesh & boundary conditions are locked. Solver blocks are under construction.';
 
   function setHint(text) {
     if (text) { hintBar.textContent = text; return; }
+    if (state.phase === 'solve') { hintBar.textContent = HINT_SOLVER; return; }
     if (state.phase === 'bc') { hintBar.textContent = HINT_BC_IDLE; return; }
     if (state.polygon) { hintBar.textContent = HINT_DONE; return; }
     hintBar.textContent = state.drawMode === 'freehand' ? HINT_FREEHAND : HINT_POINT;
@@ -246,6 +262,17 @@
   /** Convert a screen-space distance (px) into world units. */
   function worldDist(d) {
     return d / state.view.zoom;
+  }
+
+  /**
+   * Route a pointer/keyboard event to the active phase's registered plugin
+   * (solver blocks etc.). Returns true when the plugin consumed the event;
+   * the built-in phase logic below then does not run.
+   */
+  function phaseHandler(name, e) {
+    const h = phaseHandlers[state.phase];
+    if (h && typeof h[name] === 'function') { h[name](e); return true; }
+    return false;
   }
 
   /**
@@ -297,6 +324,7 @@
   function onPointerMove(e) {
     state.cursor = toLocal(e);
 
+    if (phaseHandler('pointermove', e)) return;
     if (state.phase === 'bc') { bcPointerMove(e); return; }
 
     if (state.freehandActive) {
@@ -314,6 +342,7 @@
   }
 
   function onPointerDown(e) {
+    if (phaseHandler('pointerdown', e)) return;
     if (state.phase === 'bc') { bcPointerDown(e); return; }
     if (state.polygon) return; // polygon finalized — use Clear to redraw
 
@@ -342,12 +371,14 @@
     scheduleRender();
   }
 
-  function onPointerUp() {
+  function onPointerUp(e) {
+    if (phaseHandler('pointerup', e)) return;
     if (state.phase === 'bc') { bcPointerUp(); return; }
     if (state.freehandActive) finishFreehand();
   }
 
-  function onPointerCancel() {
+  function onPointerCancel(e) {
+    if (phaseHandler('pointercancel', e)) return;
     if (state.phase === 'bc') { cancelBcBox(); return; }
     if (state.freehandActive) {
       state.freehandActive = false;
@@ -364,6 +395,7 @@
   }
 
   function onKeydown(e) {
+    if (phaseHandler('keydown', e)) return;
     if (state.phase === 'bc') {
       // Boundary-condition phase: Enter confirms the selection, Esc cancels.
       if (e.key === 'Enter') {
@@ -579,24 +611,33 @@
 
   let condState = null; // { kind } while the condition modal is open
 
-  /** Switch between the mesh phase and the boundary-condition phase. */
+  /** Switch between phases: 'mesh' (draw/edit) | 'bc' (conditions) | 'solve'. */
   function setPhase(p) {
     if (p === state.phase) return;
-    if (p === 'bc' && (!state.mesh || !state.mesh.nodes.length)) {
+    if ((p === 'bc' || p === 'solve') && (!state.mesh || !state.mesh.nodes.length)) {
       showToast('Draw a polygon first to create a mesh');
       return;
     }
+    // Let the phase being left clean up after itself (solver blocks etc.).
+    const exiting = phaseHandlers[state.phase];
+    if (exiting && exiting.exit) exiting.exit();
     state.phase = p;
     stage.classList.toggle('bc', p === 'bc');
+    stage.classList.toggle('solve', p === 'solve');
+    document.body.classList.toggle('solve-mode', p === 'solve'); // hides top-bar actions
     cancelBcSelect();
     syncPhaseControls();
+    syncSolverButton();
     setHint();
     scheduleRender();
+    // Let the phase being entered set up (solver blocks etc.).
+    const entering = phaseHandlers[p];
+    if (entering && entering.enter) entering.enter();
   }
 
   /** Lock/unlock the mesh controls and update the phase button. */
   function syncPhaseControls() {
-    const locked = state.phase === 'bc';
+    const locked = state.phase !== 'mesh';
     btnPhase.textContent = locked ? 'Edit Mesh' : 'Set BCs';
     btnPhase.classList.toggle('btn-primary', locked);
     btnDemo.disabled = locked;
@@ -606,6 +647,23 @@
     drawModeButtons.forEach(b => { b.disabled = locked; });
     cellSizeEl.disabled = locked;
     snapEl.disabled = locked || state.drawMode === 'freehand';
+  }
+
+  /**
+   * The solver launcher (bottom-right) toggles between the solve phase and
+   * the phase the user came from ('mesh' or 'bc').
+   */
+  let solverReturnPhase = 'mesh';
+  function syncSolverButton() {
+    const active = state.phase === 'solve';
+    btnSolver.textContent = active ? 'Exit Solver' : 'Solver Start';
+    btnSolver.classList.toggle('btn-primary', active);
+    btnSolver.classList.toggle('btn-ghost', !active);
+  }
+  function toggleSolver() {
+    if (state.phase === 'solve') { setPhase(solverReturnPhase); return; }
+    solverReturnPhase = state.phase;
+    setPhase('solve');
   }
 
   /* ---------- Selection ---------- */
@@ -917,6 +975,7 @@
 
   // Boundary-condition phase
   btnPhase.addEventListener('click', () => setPhase(state.phase === 'bc' ? 'mesh' : 'bc'));
+  btnSolver.addEventListener('click', toggleSolver);
   btnAddPointLoad.addEventListener('click', () => startBcSelect('pointload'));
   btnAddDistLoad.addEventListener('click', () => startBcSelect('distload'));
   btnAddSupport.addEventListener('click', () => startBcSelect('support'));
@@ -953,9 +1012,46 @@
   new ResizeObserver(() => scheduleResize()).observe(stage);
 
   /* ============================================================
+     10.5  Phase-plugin bridge — for future solver controllers
+     ============================================================ */
+
+  /**
+   * Register handlers for a phase. A solver block (e.g. a future
+   * js/solver/<problem>/ui.js) calls this to plug its pointer /
+   * keyboard / lifecycle callbacks into the app without app.js ever
+   * needing to know solver details.
+   *
+   * Handlers: enter(), exit(), pointerdown/move/up/cancel(e), keydown(e).
+   * Multiple registrations for the same phase/handler are CHAINED, so
+   * several plugins (shell, a solver block) can share a phase.
+   */
+  function registerPhase(phase, handlers) {
+    const target = (phaseHandlers[phase] = phaseHandlers[phase] || {});
+    for (const key of Object.keys(handlers)) {
+      const prev = target[key];
+      const next = handlers[key];
+      target[key] = prev
+        ? function (...args) { prev.apply(this, args); return next.apply(this, args); }
+        : next;
+    }
+  }
+
+  global.MeshStudio = global.MeshStudio || {};
+  global.MeshStudio.App = {
+    state,
+    refresh,
+    scheduleRender,
+    showToast,
+    setHint,
+    setPhase,
+    registerPhase,
+  };
+
+  /* ============================================================
      11. Init
      ============================================================ */
   updateSliderFill(cellSizeEl);
+  syncSolverButton();
   resize();
   loadDemo();
   renderBcList();

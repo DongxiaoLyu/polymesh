@@ -15,7 +15,7 @@
    their input data changes (identity checks). Pointer moves
    re-render every frame but reuse the cached paths.
 
-   Depends on:  constants.js, geometry.js
+   Depends on:  constants.js, geometry.js, mesh.js (boundaryEdges)
    Exposes:     window.MeshStudio.Renderer
    ============================================================ */
 
@@ -25,6 +25,7 @@
   const Constants = global.MeshStudio.Constants;
   const COLORS = Constants.COLORS;
   const V = global.MeshStudio.Geometry.V;
+  const Mesh = global.MeshStudio.Mesh;
 
   function createRenderer(ctx) {
 
@@ -43,6 +44,7 @@
     /* ---------- Cached Path2D objects ---------- */
     let cachedCells = null, gridPath = null;
     let cachedMesh  = null, interiorPath = null, boundaryPath = null;
+    let cachedOutline = null, outlinePath = null; // plain-mode outer boundary
     let cachedNodes = null, cachedNodesZoom = 1, nodePaths = null;
 
     function drawGrid(state) {
@@ -70,13 +72,31 @@
           addPath(el.interior ? interiorPath : boundaryPath, poly);
         }
       }
-      // Uncut / interior elements — System Blue.
+      const plain = state.meshPlain === true;
+      // Plain mode (solve phase): no element fills and no interior cell
+      // edges — only the OUTER domain boundary outline is drawn, so the
+      // heatmap underneath is neither tinted nor cluttered.
+      if (plain) {
+        if (state.mesh !== cachedOutline) {
+          cachedOutline = state.mesh;
+          outlinePath = new Path2D();
+          for (const [a, b] of Mesh.boundaryEdges(state.mesh)) {
+            outlinePath.moveTo(state.mesh.nodes[a].x, state.mesh.nodes[a].y);
+            outlinePath.lineTo(state.mesh.nodes[b].x, state.mesh.nodes[b].y);
+          }
+        }
+        ctx.strokeStyle = COLORS.boundaryEdge;
+        ctx.lineWidth = screen(state, 2.5);
+        ctx.stroke(outlinePath);
+        return;
+      }
+      // Normal (pre-processing) mode: colored fills + interior edges +
+      // boundary edges.
       ctx.fillStyle = COLORS.interiorFill;
       ctx.fill(interiorPath);
       ctx.strokeStyle = COLORS.interiorEdge;
       ctx.lineWidth = screen(state, 1.5);
       ctx.stroke(interiorPath);
-      // Cut / boundary elements — System Orange, slightly thicker stroke.
       ctx.fillStyle = COLORS.boundaryFill;
       ctx.fill(boundaryPath);
       ctx.strokeStyle = COLORS.boundaryEdge;
@@ -332,11 +352,23 @@
       ctx.setTransform(state.dpr * v.zoom, 0, 0, state.dpr * v.zoom, state.dpr * v.ox, state.dpr * v.oy);
 
       drawGrid(state);
+      // Underlay hooks (heatmap etc.) are drawn BELOW the mesh so the
+      // original polygonal cell edges stay visible on top of the fill.
+      if (state.underlayHooks) {
+        for (const fn of state.underlayHooks) fn(ctx);
+      }
       drawMesh(state);
+      // In the solve phase (meshPlain) the polygon overlay and node dots
+      // stay visible; only the mesh itself is drawn plain.
       drawPolygon(state);
       drawNodes(state);
       drawConditions(state);
       drawPreview(state);
+      // Phase plugins (solver shell etc.) can inject extra drawing (BC
+      // markers, heatmap) — runs under the same view transform.
+      if (state.renderHooks) {
+        for (const fn of state.renderHooks) fn(ctx);
+      }
     }
 
     return { render };
