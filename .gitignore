@@ -5,3 +5,12 @@ Thumbs.db
 # local logs
 *.log
 DEVELOPMENT.md
+
+# unnecessary
+Matlab_Mechancial/
+Matlab_Possion/
+icon.svg
+
+# theory/reference documents & data (not public)
+*.pdf
+*.mat
