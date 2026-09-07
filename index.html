@@ -221,6 +221,23 @@
     transition: opacity .25s ease;
   }
 
+  /* ---------- Touch adaptations (Apple-style capability enhancement) ----------
+     Desktop flows (wheel / double-click / Enter / Esc) are untouched; the
+     contextual action bar + zoom buttons appear only on coarse/touch devices
+     (body.touch-ui), while a session (drawing / BC selection) is active. */
+  body.touch-ui .touch-bar { display: flex; }
+  .touch-bar {
+    display: none; position: absolute; bottom: 68px; left: 50%;
+    transform: translateX(-50%); align-items: center; gap: 4px;
+    background: var(--panel); backdrop-filter: var(--blur); -webkit-backdrop-filter: var(--blur);
+    border-radius: 14px; box-shadow: var(--shadow);
+    border: 1px solid rgba(255,255,255,0.6);
+    padding: 5px 7px; z-index: 26;
+  }
+  .touch-label { font-size: 12px; color: var(--text); margin: 0 5px; white-space: nowrap; }
+  #touchActions, #touchZoom { display: none; align-items: center; gap: 4px; }
+  .touch-bar .btn { padding: 5px 11px; font-size: 13px; min-height: 30px; }
+
   /* ---------- Toast ---------- */
   .toast {
     position: absolute; top: 20px; left: 50%; transform: translate(-50%, -8px);
@@ -518,6 +535,22 @@
 
     <div class="toast" id="toast"></div>
     <div class="hint-bar" id="hintBar">Click to place polygon vertices · double-click, Enter, or click the first point to close</div>
+
+    <!-- Touch action bar: hidden by default; shown on coarse/touch devices
+         (body.touch-ui) while drawing / selecting, giving visible equivalents
+         of Enter / Backspace / Esc plus zoom buttons. -->
+    <div class="touch-bar" id="touchBar" aria-live="polite">
+      <span class="touch-label" id="touchLabel"></span>
+      <span id="touchActions">
+        <button id="btnTouchDone" class="btn btn-primary" aria-label="Confirm">✓</button>
+        <button id="btnTouchUndo" class="btn btn-ghost" aria-label="Undo">↩</button>
+        <button id="btnTouchCancel" class="btn btn-ghost" aria-label="Cancel">✕</button>
+      </span>
+      <span id="touchZoom">
+        <button id="btnZoomIn" class="btn btn-ghost" aria-label="Zoom in">＋</button>
+        <button id="btnZoomOut" class="btn btn-ghost" aria-label="Zoom out">−</button>
+      </span>
+    </div>
 
     <!-- Solver launcher: bottom-right, toggles the 'solve' phase.
          In the solve phase the pre-processing components are hidden and

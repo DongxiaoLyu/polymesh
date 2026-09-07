@@ -82,6 +82,18 @@
   const condCount   = document.getElementById('condCount');
   const btnCondOk   = document.getElementById('btnCondOk');
   const btnCondCancel = document.getElementById('btnCondCancel');
+  // Touch adaptation (coarse-pointer devices get visible equivalents of
+  // Enter / Backspace / Esc + zoom; desktop is untouched).
+  const touchBar     = document.getElementById('touchBar');
+  const touchLabel   = document.getElementById('touchLabel');
+  const touchActions = document.getElementById('touchActions');
+  const touchZoom    = document.getElementById('touchZoom');
+  const btnTouchDone = document.getElementById('btnTouchDone');
+  const btnTouchUndo = document.getElementById('btnTouchUndo');
+  const btnTouchCancel = document.getElementById('btnTouchCancel');
+  const btnZoomIn    = document.getElementById('btnZoomIn');
+  const btnZoomOut   = document.getElementById('btnZoomOut');
+  const solverCondModalEl = document.getElementById('solverCondModal');
 
   /* ============================================================
      2. Application state — the single source of truth
@@ -153,6 +165,7 @@
     updateReadouts();
     renderBcList();
     renderer.render(state);
+    syncTouchUI(); // refresh() renders directly — keep the touch bar in sync
     // A rebuilt mesh invalidates any solved results (state.solution is
     // cleared above); the solver legend must drop its stale numeric range.
     if (global.MeshStudio.SolverUI && typeof global.MeshStudio.SolverUI.refreshLegend === 'function') {
@@ -244,12 +257,162 @@
   const HINT_BC_SELECT = 'Click nodes/edges or drag a box to select · Enter to confirm · Esc to cancel';
   const HINT_SOLVER   = 'Solver phase — mesh & boundary conditions are locked. Pick a problem, set BCs, press Solve.';
 
+  /* ============================================================
+     4.5  Touch capability & adaptive controls (Apple-style)
+     Desktop (fine pointer + keyboard) keeps its exact UX untouched.
+     On coarse/touch devices — or the first real touch on hybrids —
+     we ADD: a contextual bottom bar (✓/↩/✕ acting as Enter/Backspace/
+     Esc), zoom +/- buttons and two-finger pinch zoom on the canvas.
+     ============================================================ */
+  const canMatch = typeof window.matchMedia === 'function';
+  let touchUI = canMatch ? window.matchMedia('(pointer: coarse)').matches : false;
+
+  function enableTouchUI() {
+    if (touchUI) return;
+    touchUI = true;
+    if (document.body) document.body.classList.add('touch-ui');
+    syncTouchUI();
+    setHint(); // re-render the current hint without Enter/Esc wording
+  }
+  // Robust enablement: media queries alone can misclassify Apple/Safari
+  // setups (Request-Desktop-Site mode, iPads with trackpads/mice reporting
+  // pointer: fine, …). ANY real touch therefore enables the touch UI — the
+  // probes run in the CAPTURE phase so even the very first tap gets the
+  // adapted bar & hints.
+  {
+    const probePtr = e => { if (e.pointerType === 'touch') enableTouchUI(); };
+    const probeTouch = () => enableTouchUI();
+    window.addEventListener('pointerdown', probePtr, { capture: true, passive: true });
+    window.addEventListener('touchstart', probeTouch, { capture: true, passive: true });
+  }
+
+  /** Rewrite keyboard-centric hint text for touch screens. */
+  function localizeTouch(s) {
+    return s
+      .replace(/\bEnter\b/g, '✓')
+      .replace(/\bEsc\b/g, '✕')
+      .replace(/Escape/g, '✕')
+      .replace(/\bBackspace\b/g, '↩')
+      .replace(/double-click/g, 'double-tap')
+      .replace(/^Click/, 'Tap');
+  }
+
+  /* ---------- Two-finger pinch zoom (touch) ---------- */
+  const touchPts = new Map(); // pointerId → {x, y}
+  let pinchOn = false;
+  let pinchLast = null;       // {dist, mx, my} of the previous move
+  const touchPtr = e => touchUI && e.pointerType === 'touch';
+
+  function cancelPinchSideEffects() {
+    // A second finger landing must not corrupt in-progress single-touch
+    // gestures (freehand stroke / BC rubber-band drag).
+    if (state.freehandActive) { state.freehandActive = false; state.drawing = []; syncPanels(); }
+    if (state.bcSel) { cancelBcBox(); if (state.bcSel) state.bcSel.dragStart = null; }
+  }
+
+  /** Returns true when the pointer event was consumed by pinch handling. */
+  function handlePinchEvent(type, e) {
+    if (!touchPtr(e)) return false;
+    if (type === 'down') {
+      touchPts.set(e.pointerId, { x: e.clientX, y: e.clientY });
+      if (touchPts.size === 2) {
+        pinchOn = true;
+        const [p1, p2] = [...touchPts.values()];
+        pinchLast = {
+          dist: Math.hypot(p1.x - p2.x, p1.y - p2.y),
+          mx: (p1.x + p2.x) / 2, my: (p1.y + p2.y) / 2,
+        };
+        cancelPinchSideEffects();
+        return true;
+      }
+      return false; // first finger → normal single-touch logic runs
+    }
+    if (type === 'move') {
+      if (!touchPts.has(e.pointerId)) return false;
+      touchPts.set(e.pointerId, { x: e.clientX, y: e.clientY });
+      if (!pinchOn || touchPts.size < 2 || !pinchLast) return false;
+      const [p1, p2] = [...touchPts.values()];
+      const dist = Math.hypot(p1.x - p2.x, p1.y - p2.y);
+      const mx = (p1.x + p2.x) / 2, my = (p1.y + p2.y) / 2;
+      const v = state.view;
+      const factor = pinchLast.dist > 0 ? dist / pinchLast.dist : 1;
+      const nz = Math.max(1, Math.min(32, v.zoom * factor));
+      // anchor the world point that was under the previous midpoint
+      const wx = (pinchLast.mx - v.ox) / v.zoom;
+      const wy = (pinchLast.my - v.oy) / v.zoom;
+      v.zoom = nz;
+      v.ox = mx - wx * nz;
+      v.oy = my - wy * nz;
+      pinchLast = { dist, mx, my };
+      updateViewGrid();
+      scheduleRender();
+      return true;
+    }
+    // 'up' / 'cancel'
+    touchPts.delete(e.pointerId);
+    if (pinchOn && touchPts.size < 2) { pinchOn = false; pinchLast = null; return true; }
+    return false;
+  }
+
+  /** Zoom by a fixed factor, anchored at the canvas centre (touch buttons). */
+  function zoomCenterBy(factor) {
+    const v = state.view;
+    const nz = Math.max(1, Math.min(32, v.zoom * factor));
+    const wx = (state.w / 2 - v.ox) / v.zoom;
+    const wy = (state.h / 2 - v.oy) / v.zoom;
+    v.zoom = nz;
+    v.ox = state.w / 2 - wx * nz;
+    v.oy = state.h / 2 - wy * nz;
+    updateViewGrid();
+    scheduleRender();
+  }
+
+  /**
+   * Show the contextual bottom bar while a "session" is in progress (drawing
+   * a polygon, BC selection…) and fall back to the zoom buttons when idle.
+   * Runs after every scheduled render, so any state change re-syncs it.
+   */
+  let touchSig = '';
+  function syncTouchUI() {
+    if (document.body) document.body.classList.toggle('touch-ui', touchUI);
+    if (!touchBar || !touchUI) return;
+    const modalOpen = importModal.classList.contains('visible') ||
+                      condModal.classList.contains('visible') ||
+                      solverCondModalEl.classList.contains('visible');
+    let mode = 'zoom', label = '';
+    if (!modalOpen) {
+      if (state.phase === 'mesh' && (state.drawing.length || state.freehandActive)) {
+        mode = 'actions';
+        label = state.freehandActive ? 'Finish stroke' : 'Close polygon';
+      } else if (state.phase === 'bc' && state.bcSel) {
+        mode = 'actions';
+        label = 'Confirm selection';
+      } else if (state.phase === 'solve') {
+        const SB = global.MeshStudio && global.MeshStudio.SolverBC;
+        if (SB && typeof SB.selecting === 'function' && SB.selecting()) {
+          mode = 'actions';
+          label = 'Confirm selection';
+        }
+      }
+    }
+    const undoOn = !!(state.phase === 'mesh' && state.drawMode === 'point' && state.drawing.length > 0);
+    const sig = mode + '|' + label + '|' + (undoOn ? '1' : '0');
+    if (sig === touchSig) return;
+    touchSig = sig;
+    touchLabel.textContent = label;
+    touchActions.style.display = mode === 'actions' ? 'flex' : 'none';
+    touchZoom.style.display = mode === 'zoom' ? 'flex' : 'none';
+    btnTouchUndo.style.visibility = (mode === 'actions' && undoOn) ? 'visible' : 'hidden';
+  }
+
   function setHint(text) {
-    if (text) { hintBar.textContent = text; return; }
-    if (state.phase === 'solve') { hintBar.textContent = HINT_SOLVER; return; }
-    if (state.phase === 'bc') { hintBar.textContent = HINT_BC_IDLE; return; }
-    if (state.polygon) { hintBar.textContent = HINT_DONE; return; }
-    hintBar.textContent = state.drawMode === 'freehand' ? HINT_FREEHAND : HINT_POINT;
+    let t;
+    if (text) t = text;
+    else if (state.phase === 'solve') t = HINT_SOLVER;
+    else if (state.phase === 'bc') t = HINT_BC_IDLE;
+    else if (state.polygon) t = HINT_DONE;
+    else t = state.drawMode === 'freehand' ? HINT_FREEHAND : HINT_POINT;
+    hintBar.textContent = touchUI ? localizeTouch(t) : t;
   }
 
   /* ============================================================
@@ -337,6 +500,7 @@
   }
 
   function onPointerMove(e) {
+    if (handlePinchEvent('move', e)) return; // pinch consumes multi-touch moves
     state.cursor = toLocal(e);
 
     if (phaseHandler('pointermove', e)) return;
@@ -357,6 +521,7 @@
   }
 
   function onPointerDown(e) {
+    if (handlePinchEvent('down', e)) return; // 2nd finger → pinch session
     if (phaseHandler('pointerdown', e)) return;
     if (state.phase === 'bc') { bcPointerDown(e); return; }
     if (state.polygon) return; // polygon finalized — use Clear to redraw
@@ -387,12 +552,14 @@
   }
 
   function onPointerUp(e) {
+    if (handlePinchEvent('up', e)) return; // lift after pinch → ignore
     if (phaseHandler('pointerup', e)) return;
     if (state.phase === 'bc') { bcPointerUp(); return; }
     if (state.freehandActive) finishFreehand();
   }
 
   function onPointerCancel(e) {
+    if (handlePinchEvent('cancel', e)) return;
     if (phaseHandler('pointercancel', e)) return;
     if (state.phase === 'bc') { cancelBcBox(); return; }
     if (state.freehandActive) {
@@ -556,10 +723,12 @@
     drawImportExample(exStroke, false);
     drawImportExample(exFilled, true);
     importModal.classList.add('visible');
+    syncTouchUI(); // modal overlays the action bar → hide it
   }
 
   function closeImportModal() {
     importModal.classList.remove('visible');
+    syncTouchUI();
   }
 
   function onFileSelected() {
@@ -818,12 +987,14 @@
     condTypeSegButtons.forEach(b => b.classList.toggle('active', b.dataset.value === 'fixed'));
     condCount.textContent = count + (kind === 'distload' ? ' edges selected' : ' nodes selected');
     condModal.classList.add('visible');
+    syncTouchUI(); // modal overlays the action bar → hide it
     condName.focus();
     condName.select();
   }
 
   function closeConditionModal() {
     condModal.classList.remove('visible');
+    syncTouchUI();
   }
 
   function confirmCondition() {
@@ -933,7 +1104,11 @@
   let rafId = null;
   function scheduleRender() {
     if (rafId) return;
-    rafId = requestAnimationFrame(() => { rafId = null; renderer.render(state); });
+    rafId = requestAnimationFrame(() => {
+      rafId = null;
+      renderer.render(state);
+      syncTouchUI(); // touch bar follows whatever state the render just drew
+    });
   }
 
   /* ---------- Wire up the controls ---------- */
@@ -983,6 +1158,40 @@
   // the solver is active and the pre-processing actions are hidden).
   if (btnSolveResetView) btnSolveResetView.addEventListener('click', resetView);
   if (btnSolvePanels) btnSolvePanels.addEventListener('click', togglePanels);
+
+  // ---------- Touch action bar ----------
+  // Visible equivalents of Enter / Backspace / Esc. Mesh-phase actions call
+  // the local functions directly; BC / solver sessions dispatch the matching
+  // keyboard event so the phase handlers (incl. solver blocks) stay the
+  // single source of truth.
+  function pressKey(key) {
+    try {
+      const ev = new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true });
+      window.dispatchEvent(ev);
+    } catch (err) { /* synthetic keys unsupported — ignore */ }
+  }
+  if (btnTouchDone) btnTouchDone.addEventListener('click', () => {
+    if (state.phase === 'mesh') {
+      if (state.drawMode === 'freehand' && state.freehandActive) finishFreehand();
+      else if (state.drawMode === 'point' && !state.polygon) finishPolygon();
+    } else pressKey('Enter');
+    syncTouchUI();
+  });
+  if (btnTouchUndo) btnTouchUndo.addEventListener('click', () => {
+    if (state.phase === 'mesh' && state.drawMode === 'point' && state.drawing.length) {
+      state.drawing.pop();
+      syncPanels();
+      scheduleRender();
+    } else pressKey('Backspace');
+    syncTouchUI();
+  });
+  if (btnTouchCancel) btnTouchCancel.addEventListener('click', () => {
+    if (state.phase === 'mesh' && (state.drawing.length || state.freehandActive)) clearPolygon();
+    else pressKey('Escape');
+    syncTouchUI();
+  });
+  if (btnZoomIn) btnZoomIn.addEventListener('click', () => zoomCenterBy(1.3));
+  if (btnZoomOut) btnZoomOut.addEventListener('click', () => zoomCenterBy(1 / 1.3));
 
   // Image import modal (opened via the "Import" segment in Draw Mode)
   btnImportPick.addEventListener('click', () => fileInput.click());

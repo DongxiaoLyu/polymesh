@@ -200,6 +200,7 @@
     modal.classList.add('visible');
     modalName.focus();
     modalName.select();
+    App.scheduleRender(); // touch bar must step aside while the modal is open
   }
 
   function defaultName(meta) {
@@ -464,6 +465,9 @@
     value: {
       get groups() { return groups; },        // read-only view
       get boundary() { return boundary; },    // ring-ordered boundary edges
+      // live selection state (the app's touch action bar asks this to decide
+      // whether to offer ✓/✕ buttons during a solver-BC pick session)
+      selecting: () => !!sel,
       computeBoundary,
     },
   });
