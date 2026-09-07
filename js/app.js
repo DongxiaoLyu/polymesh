@@ -396,13 +396,26 @@
       }
     }
     const undoOn = !!(state.phase === 'mesh' && state.drawMode === 'point' && state.drawing.length > 0);
-    const sig = mode + '|' + label + '|' + (undoOn ? '1' : '0');
+    const sig = mode + '|' + label + '|' + (undoOn ? '1' : '0') + '|' + (modalOpen ? 'm' : '');
     if (sig === touchSig) return;
     touchSig = sig;
+
+    // Bar contents: hidden elements leave the layout entirely (display:none)
+    // so the visible ✓/✕ and +/− groups stay perfectly symmetric.
     touchLabel.textContent = label;
-    touchActions.style.display = mode === 'actions' ? 'flex' : 'none';
-    touchZoom.style.display = mode === 'zoom' ? 'flex' : 'none';
-    btnTouchUndo.style.visibility = (mode === 'actions' && undoOn) ? 'visible' : 'hidden';
+    touchLabel.style.display = label ? '' : 'none';
+    touchActions.style.display = (mode === 'actions' && !modalOpen) ? 'flex' : 'none';
+    touchZoom.style.display = (mode === 'zoom' && !modalOpen) ? 'flex' : 'none';
+    btnTouchUndo.style.display = (mode === 'actions' && undoOn) ? '' : 'none';
+    btnTouchDone.style.display = (mode === 'actions') ? '' : 'none';
+    btnTouchCancel.style.display = (mode === 'actions') ? '' : 'none';
+    touchBar.style.display = (modalOpen ? 'none' : 'flex');
+
+    // The bar lives at the very bottom — never overlap the hint bar:
+    // actions mode hides it, zoom mode lifts it above the bar.
+    if (mode === 'actions') { hintBar.style.display = 'none'; }
+    else { hintBar.style.display = ''; hintBar.style.bottom = '70px'; }
+    if (modalOpen) { hintBar.style.display = ''; hintBar.style.bottom = ''; }
   }
 
   function setHint(text) {

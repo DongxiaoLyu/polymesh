@@ -224,19 +224,26 @@
   /* ---------- Touch adaptations (Apple-style capability enhancement) ----------
      Desktop flows (wheel / double-click / Enter / Esc) are untouched; the
      contextual action bar + zoom buttons appear only on coarse/touch devices
-     (body.touch-ui), while a session (drawing / BC selection) is active. */
+     (body.touch-ui). The bar sits at the very bottom and the hint bar moves
+     up / hides so they never overlap. All buttons are equal-width and hidden
+     elements are removed from layout (display:none) so ✓/✕ and +/− stay
+     perfectly symmetric. */
   body.touch-ui .touch-bar { display: flex; }
   .touch-bar {
-    display: none; position: absolute; bottom: 68px; left: 50%;
-    transform: translateX(-50%); align-items: center; gap: 4px;
+    display: none; position: absolute; bottom: 16px; left: 50%;
+    transform: translateX(-50%);
+    align-items: center; justify-content: center; gap: 6px;
     background: var(--panel); backdrop-filter: var(--blur); -webkit-backdrop-filter: var(--blur);
     border-radius: 14px; box-shadow: var(--shadow);
     border: 1px solid rgba(255,255,255,0.6);
-    padding: 5px 7px; z-index: 26;
+    padding: 5px 8px; z-index: 26;
   }
-  .touch-label { font-size: 12px; color: var(--text); margin: 0 5px; white-space: nowrap; }
-  #touchActions, #touchZoom { display: none; align-items: center; gap: 4px; }
-  .touch-bar .btn { padding: 5px 11px; font-size: 13px; min-height: 30px; }
+  .touch-label { font-size: 12px; color: var(--text); margin: 0 4px 0 0; white-space: nowrap; }
+  #touchActions, #touchZoom { display: none; align-items: center; gap: 6px; }
+  .touch-bar .btn {
+    padding: 5px 8px; font-size: 13px; min-width: 34px; min-height: 30px;
+    text-align: center;
+  }
 
   /* ---------- Toast ---------- */
   .toast {
