@@ -54,20 +54,21 @@
     z-index: 20;
     position: relative;
   }
-  .brand { display: flex; align-items: center; gap: 10px; min-width: 0; }
-  /* Brand logo (icon.svg) — wide emblem shown beside the wordmark at its
-     natural aspect ratio. */
-  .brand-logo { display: block; height: 24px; width: auto; flex: 0 0 auto; }
+  .brand { display: flex; align-items: center; gap: 9px; min-width: 0; }
+  /* Brand logo (icon.svg) — wide emblem beside the wordmark; logo, title
+     and ONLINE tag are EQUALLY spaced by the flex gap above. */
+  .brand-logo { display: block; height: 18px; width: auto; flex: 0 0 auto; }
   .brand h1 { font-size: 17px; font-weight: 600; margin: 0; letter-spacing: -0.2px; white-space: nowrap; }
-  /* Small uppercase tag beside the product name (e.g. "ONLINE" badge,
-     in the spirit of DeepSeek Harness's label design). */
+  /* Small "technical chip" beside the product name (e.g. "online"), styled
+     after DeepSeek Harness's dark label: 4px rounded block, lowercase,
+     tight tracking — spacing comes from the parent flex gap. */
   .tag {
-    display: inline-block; font-size: 10px; font-weight: 700;
-    letter-spacing: 0.9px; text-transform: uppercase;
-    padding: 2px 7px; border-radius: 999px;
-    vertical-align: 2px; margin-left: 7px;
+    display: inline-block; font-size: 10px; font-weight: 600;
+    line-height: 1; letter-spacing: 0.5px; text-transform: uppercase;
+    padding: 2.5px 6px; border-radius: 4px;
+    vertical-align: 2px; margin-left: 0;
   }
-  .tag-online { color: var(--accent); background: rgba(0,113,227,0.10); border: 1px solid rgba(0,113,227,0.35); }
+  .tag-online { color: #fff; background: #1d1d1f; border: 1px solid rgba(255, 255, 255, 0.18); }
 
   .topbar-actions { display: flex; gap: 8px; flex: 0 0 auto; }
 
@@ -439,7 +440,8 @@
   <header class="topbar">
     <div class="brand">
       <img class="brand-logo" src="icon.svg" alt="VEM Studio Online logo" />
-      <h1>VEM Studio <span class="tag tag-online">Online</span></h1>
+      <h1>VEM Studio</h1>
+      <span class="tag tag-online">online</span>
     </div>
     <div class="topbar-actions">
       <button id="btnDemo"   class="btn btn-ghost">Demo</button>

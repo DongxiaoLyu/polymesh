@@ -131,6 +131,10 @@
 
     function drawNodes(state) {
       if (!state.mesh) return;
+      // Solve phase: node dots would clutter the result heatmaps — hide
+      // them while the solver is active; they return automatically when the
+      // user exits back to the mesh / BC pre-processing phases.
+      if (state.phase === 'solve') return;
       if (isMeshHidden(state)) return; // solver block draws its own markers
       const styles = [
         { type: 'grid',         color: COLORS.nodeGrid,      r: 2.5 },
@@ -331,11 +335,11 @@
         for (const id of g.nodeIds) {
           const n = mesh.nodes[id];
           ctx.beginPath();
-          ctx.arc(n.x, n.y, 6 * k, 0, Math.PI * 2);
+          ctx.arc(n.x, n.y, 4 * k, 0, Math.PI * 2);
           ctx.fillStyle = 'rgba(255,255,255,0.85)';
           ctx.fill();
           ctx.strokeStyle = col;
-          ctx.lineWidth = 2 * k;
+          ctx.lineWidth = 1.6 * k;
           ctx.stroke();
           // Load vectors use the FEM convention (+Y = up); the canvas is
           // Y-down, so the arrow direction flips the Y component.
