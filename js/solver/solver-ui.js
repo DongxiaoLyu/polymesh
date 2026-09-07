@@ -35,6 +35,24 @@
   const legendMax  = document.getElementById('solverLegendMax');
   const legendCap  = document.getElementById('solverLegendCaption');
 
+  /* ---------- Colormaps (single source of truth) ----------
+     Gradients are VERTICAL ('to top'): the first color is the minimum
+     (bottom of the legend bar), the last is the maximum (top). Exported
+     as SolverUI.gradients so every block picks its palette from here
+     instead of re-typing CSS strings.
+
+     PALETTE POLICY (half-unified, aligned with the mVEM/MATLAB-default
+     look of B. Xu's VEM codes, whose showsolution never overrides the
+     colormap → parula since R2014b):
+       - magnitude fields (|u|, equivalent strain, von Mises, |q|, and
+         the future dynamics magnitudes) → ONE perceptually-uniform
+         sequential map (GRAD_MAG, Viridis — a parula-style colormap);
+       - fields with a natural signed meaning / zero (temperature) →
+         the diverging cold→hot RdBu (GRAD_TEMP).
+  */
+  const GRAD_TEMP = 'linear-gradient(to top, #313695, #4575b4, #74add1, #abd9e9, #e0f3f8, #fee090, #fdae61, #f46d43, #d73027, #a50026)'; // RdBu: cold→hot (temperature)
+  const GRAD_MAG = 'linear-gradient(to top, #440154, #414487, #2a788e, #22a884, #7ad151, #fde725)';                                    // Viridis: uniform sequential (parula-style)
+
   /* ---------- Solver block registry ----------
      Each block meta: { id, label, available, fields: [{ id, label, unit,
      legend }] }. `available:false` blocks appear in the dropdown but are
@@ -42,10 +60,12 @@
 
   const blocks = {};
 
-  // Called whenever the active problem block changes (solver-bc.js uses it
-  // to reset its boundary-condition groups: different problem ⇒ different BCs).
-  let onProblemChange = null;
-  function setProblemChangeHandler(fn) { onProblemChange = fn; }
+  // Problem-change listeners. Called whenever the active problem block
+  // changes: solver-bc.js resets its boundary-condition groups on this
+  // (different problem ⇒ different BCs); solver blocks may register their
+  // own listeners via setProblemChangeHandler (multiple are CHAINED).
+  const problemChangeHandlers = [];
+  function setProblemChangeHandler(fn) { problemChangeHandlers.push(fn); }
 
   function registerBlock(meta) {
     blocks[meta.id] = meta;
@@ -54,12 +74,17 @@
 
   /* ---------- Dropdowns ---------- */
 
-  /* Full "problem changed" pipeline: re-render fields, params and notify
-     listeners (solver-bc.js resets its BC groups on this). */
+  /* Full "problem changed" pipeline: drop the stale solution (different
+     problem ⇒ its fields/range no longer apply), re-render fields + params
+     and notify the listeners (solver-bc.js resets its BC groups on this). */
   function onProblemChanged() {
+    if (state.solution) {
+      state.solution = null;   // node ids are per-problem semantics — clear
+      updateLegend();          // …and reset the legend range to '—'
+    }
     renderFieldOptions();
     renderParams();
-    if (onProblemChange) onProblemChange();
+    for (const fn of problemChangeHandlers) fn();
   }
 
   function renderProblemOptions() {
@@ -100,12 +125,94 @@
     const has = !!(b && b.params && b.params.length);
     if (paramsSection) paramsSection.style.display = has ? '' : 'none';
     if (!has) return;
+
+    // Built input elements; a param with `enabledBy: <switchId>` stays
+    // disabled until that switch is ON.
+    const controls = []; // { input, enabledBy }
+
+    function applyEnableStates() {
+      for (const c of controls) {
+        if (!c.enabledBy) continue;
+        c.input.disabled = !paramValues[c.enabledBy];
+      }
+    }
+
     for (const p of b.params) {
       const row = document.createElement('div');
       row.className = 'param-row';
       const lbl = document.createElement('span');
       lbl.className = 'param-label';
       lbl.textContent = p.label + (p.unit ? ' [' + p.unit + ']' : '');
+      row.appendChild(lbl);
+
+      if (p.type === 'switch') {
+        // iOS-style toggle switch (same .switch markup as the app's toggles)
+        const sw = document.createElement('label');
+        sw.className = 'switch';
+        const cb = document.createElement('input');
+        cb.type = 'checkbox';
+        cb.checked = !!p.value;
+        const pill = document.createElement('span');
+        pill.className = 'slider';
+        sw.appendChild(cb);
+        sw.appendChild(pill);
+        cb.addEventListener('change', () => {
+          paramValues[p.id] = cb.checked;
+          applyEnableStates();
+          App.scheduleRender();
+        });
+        row.appendChild(sw);
+        paramsWrap.appendChild(row);
+        paramValues[p.id] = !!p.value;
+        controls.push({ input: cb, enabledBy: null });
+        if (p.note) {
+          const note = document.createElement('p');
+          note.className = 'hint';
+          note.textContent = p.note;
+          paramsWrap.appendChild(note);
+        }
+        continue;
+      }
+
+      if (p.type === 'slider') {
+        // Logarithmic slider: the input VALUE is the exponent and the param
+        // value is base^exponent (×1, ×10, ×100, …). The track fill colour
+        // (--val) follows the knob on every drag. No hint line is emitted
+        // unless the block declares p.note.
+        const base = p.logBase || 10;
+        const input = document.createElement('input');
+        input.type = 'range';
+        input.className = 'param-range';
+        input.min = String(p.min != null ? p.min : 0);
+        input.max = String(p.max != null ? p.max : 4);
+        input.step = String(p.step != null ? p.step : 0.1);
+        input.value = String(p.value != null ? p.value : 2);
+        row.appendChild(input);
+        const note = p.note ? document.createElement('p') : null;
+        if (note) note.className = 'hint';
+        const fill = () => {
+          const mn = parseFloat(input.min), mx = parseFloat(input.max);
+          const v = parseFloat(input.value);
+          const pct = mx > mn ? ((v - mn) / (mx - mn)) * 100 : 0;
+          input.style.setProperty('--val', pct + '%');
+        };
+        const apply = () => {
+          const v = parseFloat(input.value);
+          const exp = Number.isFinite(v) ? v : (p.value != null ? p.value : 2);
+          paramValues[p.id] = Math.pow(base, exp);
+          if (note) note.textContent = p.note + ' — × ' + Math.round(Math.pow(base, exp));
+          fill();
+          App.scheduleRender(); // e.g. the deformed heatmap follows the scale
+        };
+        input.addEventListener('input', apply);
+        paramsWrap.appendChild(row);
+        if (note) paramsWrap.appendChild(note);
+        controls.push({ input, enabledBy: p.enabledBy || null });
+        apply(); // init paramValues (+ note text) + track fill
+        continue;
+      }
+
+      // Plain numeric input (E, nu, k, f, …)
       const input = document.createElement('input');
       input.type = 'number';
       input.className = 'cond-input param-input';
@@ -114,11 +221,12 @@
       input.addEventListener('input', () => {
         const v = parseFloat(input.value);
         paramValues[p.id] = isFinite(v) ? v : p.value; // invalid → back to default
+        App.scheduleRender(); // params may drive the canvas
       });
-      row.appendChild(lbl);
       row.appendChild(input);
       paramsWrap.appendChild(row);
       paramValues[p.id] = p.value;
+      controls.push({ input, enabledBy: p.enabledBy || null });
       if (p.note) {
         const note = document.createElement('p');
         note.className = 'hint';
@@ -126,6 +234,7 @@
         paramsWrap.appendChild(note);
       }
     }
+    applyEnableStates();
   }
 
   function renderFieldOptions() {
@@ -200,6 +309,91 @@
   // The Solve button's blocked/enabled state is managed by solver-bc.js
   // (gated on the active block's BC requirements).
 
+  /* ============================================================
+     Shared heatmap toolkit (colormap sampling + smooth nodal-field
+     fan rendering) — used by every solver block so the look stays
+     identical and the math lives in ONE place.
+     ============================================================ */
+
+  /** Parse a 'linear-gradient(to top, #hex, …)' string → [[r,g,b], …]. */
+  function heatParse(css) {
+    const hex = /#[0-9a-fA-F]{6}/g;
+    const stops = [];
+    let m;
+    while ((m = hex.exec(css)) !== null) {
+      const v = parseInt(m[0].slice(1), 16);
+      stops.push([(v >> 16) & 255, (v >> 8) & 255, v & 255]);
+    }
+    return stops;
+  }
+
+  /** Sample a stop list at t ∈ [0,1] → [r,g,b] (arrays keep the per-pixel
+      interpolation math cheap; stringify only at the last fill step). */
+  function heatSample(stops, t) {
+    if (!stops.length) return [128, 128, 128];
+    if (stops.length === 1) return stops[0].slice();
+    const pos = Math.max(0, Math.min(1, t)) * (stops.length - 1);
+    const i = Math.min(stops.length - 2, Math.floor(pos));
+    const fr = pos - i;
+    const a = stops[i], b = stops[i + 1];
+    return [
+      Math.round(a[0] + (b[0] - a[0]) * fr),
+      Math.round(a[1] + (b[1] - a[1]) * fr),
+      Math.round(a[2] + (b[2] - a[2]) * fr),
+    ];
+  }
+
+  /** Field value → [r,g,b] via the stops, normalised by the field range. */
+  function heatColor(stops, min, max, v) {
+    const span = max - min;
+    return heatSample(stops, span > 1e-30 ? (v - min) / span : 0.5);
+  }
+
+  /** [r,g,b] → 'rgb(r,g,b)'. */
+  function heatRgb(c) {
+    return 'rgb(' + c[0] + ',' + c[1] + ',' + c[2] + ')';
+  }
+
+  /**
+   * Per-ELEMENT heatmap for nodal fields: average the node values of each
+   * polygon and fill the WHOLE element with ONE colour (colour of the
+   * mean value via the colormap). Uniform fill makes the underlying cell
+   * geometry readable — you can tell square / triangle / hexagonal /
+   * clipped boundary elements apart — and there are no triangle seams to
+   * begin with.
+   *
+   * xyOf(i)    → {x, y}   (node position; may be deformed)
+   * valueOf(i) → number  (node field value; cached per node)
+   */
+  function heatElements(ctx, mesh, xyOf, valueOf, stops, min, max) {
+    const elements = mesh.elements;
+    if (!elements.length) return;
+    const cache = new Array(mesh.nodes.length).fill(null);
+    const valOf = id => {
+      let v = cache[id];
+      if (v == null) v = cache[id] = valueOf(id);
+      return v;
+    };
+    for (let e = 0; e < elements.length; e++) {
+      const ids = elements[e].nodeIds;
+      const Nv = ids.length;
+      let sum = 0;
+      for (let i = 0; i < Nv; i++) sum += valOf(ids[i]);
+      ctx.fillStyle = heatRgb(heatColor(stops, min, max, sum / Nv));
+      const p0 = xyOf(ids[0]);
+      ctx.beginPath();
+      ctx.moveTo(p0.x, p0.y);
+      for (let i = 1; i < Nv; i++) {
+        const p = xyOf(ids[i]);
+        ctx.lineTo(p.x, p.y);
+      }
+      ctx.closePath();
+      ctx.fill();
+    }
+  }
+
+  /* ---------- Public API ---------- */
+
   /* ---------- Public API ---------- */
 
   global.MeshStudio = global.MeshStudio || {};
@@ -207,37 +401,51 @@
     registerBlock,
     blocks,
     setProblemChangeHandler,
+    gradients: { temperature: GRAD_TEMP,
+                 flux: GRAD_MAG, displacement: GRAD_MAG, strain: GRAD_MAG,
+                 stress: GRAD_MAG, velocity: GRAD_MAG, acceleration: GRAD_MAG },
+    heat: { parse: heatParse, sample: heatSample, color: heatColor,
+            rgb: heatRgb, elements: heatElements },
     currentProblem: () => (selProblem ? selProblem.value : null),
     currentParams: () => ({ ...paramValues }),
     currentField: () => (selField ? selField.value : null),
     refreshLegend: updateLegend,
-    solve: null,           // set by a solver block to replace the placeholder click
+    // A solver block attaches its real solve() to blocks[<id>].solve
+    // (per-problem dispatch in solver-bc.js). `solve` stays as a null
+    // legacy slot and is no longer used by the shell.
+    solve: null,
   };
 
   /* ============================================================
      Scaffolding metadata for the planned blocks (data only — no
      numerical code). A block becomes selectable once it ships; its
-     real metadata can be re-registered from the block itself.
-
-     Gradients are VERTICAL ('to top'): the first color is the minimum
-     (bottom of the legend bar), the last is the maximum (top).
+     real metadata can be re-registered from the block itself
+     (colormaps come from the GRAD_* constants exported above).
      ============================================================ */
 
-  const GRAD_TEMP = 'linear-gradient(to top, #313695, #4575b4, #74add1, #abd9e9, #e0f3f8, #fee090, #fdae61, #f46d43, #d73027, #a50026)'; // RdBu: cold→hot
-  const GRAD_FLUX = 'linear-gradient(to top, #440154, #414487, #2a788e, #22a884, #7ad151, #fde725)';                                   // Viridis
-  const GRAD_DISP = 'linear-gradient(to top, #f7fbff, #deebf7, #c6dbef, #9ecae1, #6baed6, #4292c6, #2171b5, #08519c, #08306b)';        // Blues
-  const GRAD_STRAIN = 'linear-gradient(to top, #ffffd9, #edf8b1, #c7e9b4, #7fcdbb, #41b6c4, #1d91c0, #225ea8, #253494, #081d58)';     // YlGnBu
-  const GRAD_STRESS = 'linear-gradient(to top, #a50026, #d73027, #f46d43, #fdae61, #fee08b, #ffffbf, #d9ef8b, #a6d96a, #66bd63, #1a9850, #006837)'; // RdYlGn
-  const GRAD_VEL = 'linear-gradient(to top, #0d0887, #6a00a8, #b12a90, #e16462, #fca636, #f0f921)';                                   // Plasma
-  const GRAD_ACC = 'linear-gradient(to top, #000004, #1b0c41, #4a0c6b, #781c6d, #a52c60, #cf4446, #ed6925, #fb9b06, #f7d13d)';        // Magma
+  // NOTE — registration order also defines the dropdown order and the
+  // default problem (first available block). Elasticity is registered
+  // first on purpose so it becomes the DEFAULT solver once it ships
+  // (its real metadata is re-registered by js/solver/elastic/ui.js).
+
+  registerBlock({
+    id: 'elastic',
+    label: '2D Elasticity',
+    available: false,
+    fields: [
+      { id: 'displacement', label: 'Displacement', unit: 'mm',  legend: GRAD_MAG },
+      { id: 'strain',       label: 'Strain',       unit: '—',   legend: GRAD_MAG },
+      { id: 'stress',       label: 'Stress',       unit: 'MPa', legend: GRAD_MAG },
+    ],
+  });
 
   registerBlock({
     id: 'poisson',
     label: '2D Poisson Equation',
-    available: true, // first block under construction
+    available: true, // (real metadata re-registered by js/solver/poisson/ui.js)
     fields: [
       { id: 'temperature', label: 'Temperature', unit: '°C',    legend: GRAD_TEMP },
-      { id: 'flux',        label: 'Heat Flux',   unit: 'W/m²',  legend: GRAD_FLUX },
+      { id: 'flux',        label: 'Heat Flux',   unit: 'W/m²',  legend: GRAD_MAG },
     ],
     // Solver boundary conditions — entered in the solve phase on BOUNDARY
     // edges only (js/solver/solver-bc.js). Unassigned edges default to
@@ -257,25 +465,14 @@
   });
 
   registerBlock({
-    id: 'elastic',
-    label: '2D Elasticity',
-    available: false,
-    fields: [
-      { id: 'displacement', label: 'Displacement', unit: 'mm',  legend: GRAD_DISP },
-      { id: 'strain',       label: 'Strain',       unit: '—',   legend: GRAD_STRAIN },
-      { id: 'stress',       label: 'Stress',       unit: 'MPa', legend: GRAD_STRESS },
-    ],
-  });
-
-  registerBlock({
     id: 'dynamics',
     label: '2D Dynamics',
     available: false,
     fields: [
-      { id: 'displacement', label: 'Displacement', unit: 'mm',    legend: GRAD_DISP },
-      { id: 'velocity',     label: 'Velocity',     unit: 'mm/s',  legend: GRAD_VEL },
-      { id: 'acceleration', label: 'Acceleration', unit: 'mm/s²', legend: GRAD_ACC },
-      { id: 'stress',       label: 'Stress',       unit: 'MPa',   legend: GRAD_STRESS },
+      { id: 'displacement', label: 'Displacement', unit: 'mm',    legend: GRAD_MAG },
+      { id: 'velocity',     label: 'Velocity',     unit: 'mm/s',  legend: GRAD_MAG },
+      { id: 'acceleration', label: 'Acceleration', unit: 'mm/s²', legend: GRAD_MAG },
+      { id: 'stress',       label: 'Stress',       unit: 'MPa',   legend: GRAD_MAG },
     ],
   });
 })(window);

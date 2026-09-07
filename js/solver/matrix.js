@@ -127,9 +127,47 @@
     return { x, iterations: iterations + 1, residual: norm2(r) / bNorm };
   }
 
+  /* ---------- Dense solver (small local systems) ---------- */
+
+  /**
+   * Solve A·X = B by Gauss–Jordan elimination with partial pivoting.
+   * A: n×n flat row-major; B: n×cols flat row-major.
+   * Returns X: n×cols flat row-major. Used for the tiny dense systems
+   * of the VEM projectors (3×3 scalar, 6×6 elasticity, …).
+   */
+  function solveDense(A, B, n, cols) {
+    const w = n + cols;
+    const M = new Float64Array(n * w);
+    for (let i = 0; i < n; i++) {
+      for (let j = 0; j < n; j++) M[i * w + j] = A[i * n + j];
+      for (let j = 0; j < cols; j++) M[i * w + n + j] = B[i * cols + j];
+    }
+    for (let col = 0; col < n; col++) {
+      let piv = col;
+      for (let r = col + 1; r < n; r++) {
+        if (Math.abs(M[r * w + col]) > Math.abs(M[piv * w + col])) piv = r;
+      }
+      if (Math.abs(M[piv * w + col]) < 1e-14) throw new Error('singular VEM projection system');
+      if (piv !== col) {
+        for (let c = 0; c < w; c++) { const t = M[col * w + c]; M[col * w + c] = M[piv * w + c]; M[piv * w + c] = t; }
+      }
+      for (let r = 0; r < n; r++) {
+        if (r === col) continue;
+        const f = M[r * w + col] / M[col * w + col];
+        for (let c = col; c < w; c++) M[r * w + c] -= f * M[col * w + c];
+      }
+    }
+    const X = new Float64Array(n * cols);
+    for (let i = 0; i < n; i++) {
+      const d = M[i * w + i];
+      for (let j = 0; j < cols; j++) X[i * cols + j] = M[i * w + n + j] / d;
+    }
+    return X;
+  }
+
   /* ---------- Public API ---------- */
 
   global.MeshStudio = global.MeshStudio || {};
   global.MeshStudio.Solver = global.MeshStudio.Solver || {};
-  global.MeshStudio.Solver.Matrix = { fromTriplets, matvec, dot, norm2, axpy, cgSolve };
+  global.MeshStudio.Solver.Matrix = { fromTriplets, matvec, dot, norm2, axpy, cgSolve, solveDense };
 })(window);

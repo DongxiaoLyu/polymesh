@@ -1,9 +1,12 @@
-# PolyMesh — VEM Preprocessor
+# VEM Studio Online — VEM Preprocessor & Solver
 
-An interactive, browser-based preprocessor for **Virtual Element Method (VEM)** analysis.
-Draw a 2D domain, generate a conforming polygonal mesh, apply boundary conditions,
-and export a ready-to-run input file. No installation, no server — everything runs
-locally in your browser.
+The **web companion of the VEM Studio desktop application** — an interactive,
+browser-based workbench for **Virtual Element Method (VEM)** analysis. Draw a 2D
+domain, generate a conforming polygonal mesh, apply boundary conditions, run
+in-browser VEM solvers (Poisson heat conduction & plane-stress elasticity;
+dynamics planned), inspect heatmaps and deformed plots, and export a
+ready-to-run mesh file. No installation, no server — everything runs locally in
+your browser.
 
 ## Features
 
@@ -18,13 +21,26 @@ locally in your browser.
   zoom-out is clamped at 1× so the view never shows beyond the drawing area,
   and the background lattice always fills the view; **Reset View** restores it
 - **Export** — a single TXT file containing nodes, elements, loads, and supports
-- **Solver (under construction)** — click **Solver Start** (bottom-right) to switch into
-  the solver phase: pre-processing components are hidden and solver components take over.
-  Planned blocks: **2D Poisson Equation** (first), **2D Elasticity**, **2D Dynamics** —
-  each developed as an independent module with its own display fields and vertical
-  heatmap legend. Solver boundary conditions are set on the domain **boundary edges**
-  only (Dirichlet temperature / Neumann heat flux); unassigned edges default to
-  **zero-flux Neumann (insulated)**
+- **Solver** — click **Solver Start** (bottom-right) to switch into the solver
+  phase: pre-processing components are hidden and solver components take over.
+  Each problem is an independent module with its own display fields and vertical
+  heatmap legend:
+  - **2D Elasticity** (plane stress, VEM) — the default problem. Loads & supports come
+    from the pre-processing BC phase (point loads, distributed edge loads,
+    fixed/hinge supports; ≥ 2 support nodes required). By default the
+    displacement / strain / von Mises heatmaps are drawn on the **undeformed**
+    mesh (colour-only, nothing can blow up). A **Show deformation** switch turns
+    on the classic deformed plot — the heatmap follows the displaced mesh while
+    a light undeformed reference wireframe stays at the original position — and
+    unlocks the logarithmic **Deformation × slider** (10⁰…10⁵, default ×10)
+    whose blue track fill follows the knob.
+  - **2D Poisson Equation** (heat conduction, VEM) — implemented. Scalar
+    boundary conditions are set on the domain **boundary edges** only
+    (Dirichlet temperature / Neumann heat flux); unassigned edges default to
+    **zero-flux Neumann (insulated)**. Its BC physics differ from the
+    mechanical loads/supports, so those pre-processor markers are hidden while
+    Poisson is solved.
+  - **2D Dynamics** — planned (coming soon).
 
 ## Quick start
 
@@ -33,6 +49,9 @@ Open the live site:
 ```
 https://DongxiaoLyu.github.io/polymesh/
 ```
+
+(The URL keeps the repository's original `polymesh` name; the app itself is
+**VEM Studio Online**.)
 
 Or run it locally: clone the repository and open `index.html` in any modern browser —
 no build step required.
@@ -50,8 +69,10 @@ no build step required.
    - *Distributed Load* — click or box-select mesh edges, then name the group and
      enter the vector (per unit length, FEM convention: **+X right, +Y up**).
 4. **Export** — click **Export TXT** to download `mesh.txt`.
-5. **Solve (coming soon)** — click **Solver Start** in the bottom-right corner to enter
-   the solver phase (pre-processing UI is hidden while the solver is active).
+5. **Solve** — click **Solver Start** (bottom-right) to enter the solver phase
+   (pre-processing UI is hidden while the solver is active). Pick a problem:
+   Poisson (set scalar boundary conditions on boundary edges) or Elasticity
+   (set loads/supports in the pre-processing BC phase first).
 
 ## Output format
 

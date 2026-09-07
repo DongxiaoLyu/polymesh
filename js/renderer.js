@@ -34,6 +34,17 @@
       return px / state.view.zoom;
     }
 
+    /**
+     * Whether the renderer must skip mesh/polygon/node drawing. Prefers the
+     * per-frame predicate state.hideMeshFn (set by the elastic block, whose
+     * deformed-mode switch must take effect immediately) and falls back to
+     * the static state.hideMesh boolean.
+     */
+    function isMeshHidden(s) {
+      if (typeof s.hideMeshFn === 'function') return s.hideMeshFn();
+      return !!s.hideMesh;
+    }
+
     /** Trace one polygon ring into an existing Path2D. */
     function addPath(path, poly) {
       path.moveTo(poly[0].x, poly[0].y);
@@ -63,6 +74,7 @@
 
     function drawMesh(state) {
       if (!state.mesh) return;
+      if (isMeshHidden(state)) return; // a solver block draws the domain itself
       if (state.mesh !== cachedMesh) {
         cachedMesh = state.mesh;
         interiorPath = new Path2D();
@@ -105,6 +117,7 @@
     }
 
     function drawPolygon(state) {
+      if (isMeshHidden(state)) return; // solver block renders the domain itself
       const poly = state.polygon;
       if (!poly || poly.length < 3) return;
       const path = new Path2D();
@@ -118,6 +131,7 @@
 
     function drawNodes(state) {
       if (!state.mesh) return;
+      if (isMeshHidden(state)) return; // solver block draws its own markers
       const styles = [
         { type: 'grid',         color: COLORS.nodeGrid,      r: 2.5 },
         { type: 'sampling',     color: COLORS.nodeSampling,  r: 3.5 },
@@ -261,6 +275,16 @@
     function drawConditions(state) {
       const mesh = state.mesh;
       if (!mesh) return;
+      // Pre-processor mechanical BC markers (loads / supports) only belong
+      // to problems that CONSUME them (2D Elasticity, flag usesPreprocBCs).
+      // During the solve phase of problems with different BC physics (e.g.
+      // Poisson's scalar Dirichlet/Neumann) they are hidden — evaluated
+      // per frame against the ACTIVE block's metadata.
+      if (state.phase === 'solve') {
+        const UI = global.MeshStudio && global.MeshStudio.SolverUI;
+        const blk = UI && UI.currentProblem ? UI.blocks[UI.currentProblem()] : null;
+        if (!blk || !blk.usesPreprocBCs) return;
+      }
       const colors = Constants.COND_COLORS;
       const k = 1 / state.view.zoom; // screen px -> world units
 

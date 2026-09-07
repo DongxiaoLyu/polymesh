@@ -38,6 +38,7 @@
 
   const bcButtons  = document.getElementById('solverBcButtons');
   const bcList     = document.getElementById('solverBcList');
+  const bcSection  = document.getElementById('solverBcSection');
   const modal      = document.getElementById('solverCondModal');
   const modalTitle = document.getElementById('solverCondTitle');
   const modalName  = document.getElementById('solverCondName');
@@ -271,9 +272,18 @@
     if (!btnSolve) return;
     const block = currentBlock();
     let valid = false, reason = '';
-    if (block && block.available && block.bcs && block.bcs.length) {
-      valid = block.bcs.every(b => groups.filter(g => g.bc === b.id).length >= (b.minGroups || 0));
-      if (!valid) reason = 'Add at least one Temperature (Dirichlet) BC on boundary edges';
+    if (block && block.available) {
+      if (block.bcs && block.bcs.length) {
+        valid = block.bcs.every(b => groups.filter(g => g.bc === b.id).length >= (b.minGroups || 0));
+        if (!valid) reason = 'Add at least one Temperature (Dirichlet) BC on boundary edges';
+      } else {
+        // Available problem WITHOUT scalar BC requirements (e.g. 2D
+        // Elasticity reads loads/supports from the pre-processor BC
+        // phase): the shell imposes no gate here — the block's own
+        // solve() validates its problem-specific requirements and the
+        // faded click keeps explaining why it cannot run.
+        valid = true;
+      }
     }
     const blocked = !valid;
     btnSolve.classList.toggle('solver-blocked', blocked);
@@ -283,17 +293,26 @@
 
   /* ---------- BC buttons (from the active block's metadata) ---------- */
 
+  /**
+   * The whole "Boundary Conditions" section (add-buttons, list, default
+   * hint) is only meaningful for problems whose solver BCs ARE these
+   * boundary-edge scalar groups (e.g. Poisson). Problems that consume the
+   * pre-processor mechanical BCs (elasticity) or are still unavailable
+   * hide the section entirely — no stray "coming soon" / empty-list texts.
+   */
+  function syncBcSection() {
+    if (!bcSection) return;
+    const block = currentBlock();
+    const has = !!(block && block.available && block.bcs && block.bcs.length);
+    bcSection.style.display = has ? '' : 'none';
+  }
+
   function renderBcButtons() {
+    syncBcSection();
     if (!bcButtons) return;
     bcButtons.replaceChildren();
     const block = currentBlock();
-    if (!block || !block.bcs || !block.bcs.length) {
-      const note = document.createElement('p');
-      note.className = 'bc-empty';
-      note.textContent = block && !block.available ? 'Problem type coming soon' : 'No boundary conditions for this problem';
-      bcButtons.appendChild(note);
-      return;
-    }
+    if (!block || !block.bcs || !block.bcs.length) return; // section hidden
     for (const b of block.bcs) {
       const btn = document.createElement('button');
       btn.className = 'btn btn-ghost';
@@ -380,7 +399,10 @@
       renderBcButtons();
       renderList();
       updateSolveGating();
-      App.setHint('Set BCs on BOUNDARY edges (interior edges are not selectable) — default: zero-flux Neumann');
+      const blk = currentBlock();
+      App.setHint(blk && blk.bcs && blk.bcs.length
+        ? 'Set BCs on BOUNDARY edges (interior edges are not selectable) — default: zero-flux Neumann'
+        : (blk ? 'Solve phase — press Solve' : 'Solver phase — pick a problem from the panel'));
     },
     exit() {
       cancelSel();
@@ -428,8 +450,9 @@
         : 'Missing required boundary condition: ' + missing.label);
       return;
     }
-    // A shipped solver block replaces the placeholder with the real solve.
-    if (typeof SolverUI.solve === 'function') { SolverUI.solve(); return; }
+    // A shipped solver block attaches its solve() to its own metadata
+    // (blocks[<id>].solve) — dispatch to the ACTIVE problem's solver.
+    if (block && typeof block.solve === 'function') { block.solve(); return; }
     App.showToast('Solver core is under construction — coming soon');
   });
 

@@ -50,6 +50,8 @@
   const btnResetView = document.getElementById('btnResetView');
   const btnExport   = document.getElementById('btnExport');
   const btnPanels   = document.getElementById('btnPanels');
+  const btnSolvePanels = document.getElementById('btnSolvePanels');     // solve-phase top bar
+  const btnSolveResetView = document.getElementById('btnSolveResetView');
   const importModal = document.getElementById('importModal');
   const btnImportPick  = document.getElementById('btnImportPick');
   const btnImportClose = document.getElementById('btnImportClose');
@@ -111,6 +113,11 @@
     underlayHooks: [],  // extra draw callbacks run BELOW the mesh (heatmap, …)
     meshPlain: false,   // solve phase: draw the mesh plain — no fills, no
                         // interior cell edges, only the outer boundary outline
+    hideMesh: false,    // legacy static flag; see hideMeshFn below
+    hideMeshFn: null,   // optional () => bool — dynamic mesh-hiding predicate.
+                        // The renderer re-evaluates it EVERY frame, so toggling
+                        // e.g. the elastic "Show deformation" switch takes
+                        // effect immediately (no event plumbing needed).
   };
 
   const renderer = Renderer.createRenderer(ctx);
@@ -146,6 +153,11 @@
     updateReadouts();
     renderBcList();
     renderer.render(state);
+    // A rebuilt mesh invalidates any solved results (state.solution is
+    // cleared above); the solver legend must drop its stale numeric range.
+    if (global.MeshStudio.SolverUI && typeof global.MeshStudio.SolverUI.refreshLegend === 'function') {
+      global.MeshStudio.SolverUI.refreshLegend();
+    }
     if (hadConditions) showToast('Mesh changed — boundary conditions cleared');
   }
 
@@ -211,7 +223,9 @@
   function syncPanels() {
     const drawing = state.drawing.length > 0 || state.freehandActive;
     stage.classList.toggle('drawing', drawing);
-    btnPanels.disabled = drawing; // panel toggle is unavailable mid-drawing
+    // Panel toggle is unavailable mid-drawing — both the pre-processing
+    // button and the solve-phase twin follow the same state.
+    [btnPanels, btnSolvePanels].forEach(b => { if (b) b.disabled = drawing; });
   }
 
   /** Manual show/hide toggle for the floating panels. */
@@ -219,7 +233,8 @@
   function togglePanels() {
     panelsHidden = !panelsHidden;
     stage.classList.toggle('ui-off', panelsHidden);
-    btnPanels.textContent = panelsHidden ? 'Show Panels' : 'Hide Panels';
+    const label = panelsHidden ? 'Show Panels' : 'Hide Panels';
+    [btnPanels, btnSolvePanels].forEach(b => { if (b) b.textContent = label; });
   }
 
   const HINT_POINT    = 'Click to place polygon vertices · double-click, Enter, or click the first point to close';
@@ -227,7 +242,7 @@
   const HINT_DONE     = 'Mesh generated — adjust the controls or press Clear to redraw';
   const HINT_BC_IDLE  = 'Boundary-condition phase — mesh is locked. Add loads & supports from the panel.';
   const HINT_BC_SELECT = 'Click nodes/edges or drag a box to select · Enter to confirm · Esc to cancel';
-  const HINT_SOLVER   = 'Solver phase — mesh & boundary conditions are locked. Solver blocks are under construction.';
+  const HINT_SOLVER   = 'Solver phase — mesh & boundary conditions are locked. Pick a problem, set BCs, press Solve.';
 
   function setHint(text) {
     if (text) { hintBar.textContent = text; return; }
@@ -964,6 +979,10 @@
   btnResetView.addEventListener('click', resetView);
   btnExport.addEventListener('click', exportTxt);
   btnPanels.addEventListener('click', togglePanels);
+  // Solve-phase top-bar twins (Reset View / Hide Panels stay usable while
+  // the solver is active and the pre-processing actions are hidden).
+  if (btnSolveResetView) btnSolveResetView.addEventListener('click', resetView);
+  if (btnSolvePanels) btnSolvePanels.addEventListener('click', togglePanels);
 
   // Image import modal (opened via the "Import" segment in Draw Mode)
   btnImportPick.addEventListener('click', () => fileInput.click());
