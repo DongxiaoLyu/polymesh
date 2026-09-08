@@ -196,7 +196,7 @@ console.log('OK: import modal opens via Draw Mode "Import" segment, examples dra
 
   // start a point-load selection and pick a node at a known grid point
   elements.get('btnAddPointLoad').listeners.click[0]();
-  const hint = elements.get('hintBar').textContent;
+  const hint = elements.get('hintText').textContent;
   if (!/Click nodes\/edges/.test(hint)) throw new Error('selection hint not shown: ' + hint);
 
   const key = (k, target) => ({ key: k, target: target || { tagName: 'BODY' }, preventDefault() {} });
@@ -391,7 +391,7 @@ console.log('OK: import modal opens via Draw Mode "Import" segment, examples dra
 
   btnSolver.listeners.click[0]();                  // enter the solve phase
   if (!stageEl.classList.contains('solve')) throw new Error('stage did not enter solve phase (BC test)');
-  if (!/boundary/i.test(elements.get('hintBar').textContent)) throw new Error('solve hint should mention boundary edges: ' + elements.get('hintBar').textContent);
+  if (!/boundary/i.test(elements.get('hintText').textContent)) throw new Error('solve hint should mention boundary edges: ' + elements.get('hintText').textContent);
 
   const bcButtons = elements.get('solverBcButtons');
   if (bcButtons.children.length !== 2) throw new Error('poisson should expose 2 BC buttons, got ' + bcButtons.children.length);

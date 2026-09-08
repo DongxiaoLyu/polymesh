@@ -83,16 +83,12 @@
   const btnCondOk   = document.getElementById('btnCondOk');
   const btnCondCancel = document.getElementById('btnCondCancel');
   // Touch adaptation (coarse-pointer devices get visible equivalents of
-  // Enter / Backspace / Esc + zoom; desktop is untouched).
-  const touchBar     = document.getElementById('touchBar');
-  const touchLabel   = document.getElementById('touchLabel');
-  const touchActions = document.getElementById('touchActions');
-  const touchZoom    = document.getElementById('touchZoom');
-  const btnTouchDone = document.getElementById('btnTouchDone');
-  const btnTouchUndo = document.getElementById('btnTouchUndo');
+  // Enter / Backspace / Esc; zoom is pinch-only; desktop is untouched).
+  const hintText      = document.getElementById('hintText');
+  const touchActions  = document.getElementById('touchActions');
+  const btnTouchDone  = document.getElementById('btnTouchDone');
+  const btnTouchUndo  = document.getElementById('btnTouchUndo');
   const btnTouchCancel = document.getElementById('btnTouchCancel');
-  const btnZoomIn    = document.getElementById('btnZoomIn');
-  const btnZoomOut   = document.getElementById('btnZoomOut');
   const solverCondModalEl = document.getElementById('solverCondModal');
 
   /* ============================================================
@@ -354,68 +350,35 @@
     return false;
   }
 
-  /** Zoom by a fixed factor, anchored at the canvas centre (touch buttons). */
-  function zoomCenterBy(factor) {
-    const v = state.view;
-    const nz = Math.max(1, Math.min(32, v.zoom * factor));
-    const wx = (state.w / 2 - v.ox) / v.zoom;
-    const wy = (state.h / 2 - v.oy) / v.zoom;
-    v.zoom = nz;
-    v.ox = state.w / 2 - wx * nz;
-    v.oy = state.h / 2 - wy * nz;
-    updateViewGrid();
-    scheduleRender();
-  }
-
   /**
-   * Show the contextual bottom bar while a "session" is in progress (drawing
-   * a polygon, BC selection…) and fall back to the zoom buttons when idle.
-   * Runs after every scheduled render, so any state change re-syncs it.
+   * Bottom pill (single element) two-mode sync: idle → hint TEXT (dark);
+   * while a drawing / selection session is active the pill morphs into the
+   * flat symbol buttons (light). Runs after every scheduled render, so any
+   * state change re-syncs it idempotently.
    */
   let touchSig = '';
   function syncTouchUI() {
     if (document.body) document.body.classList.toggle('touch-ui', touchUI);
-    if (!touchBar || !touchUI) return;
+    if (!hintBar || !touchUI) return;
     const modalOpen = importModal.classList.contains('visible') ||
                       condModal.classList.contains('visible') ||
                       solverCondModalEl.classList.contains('visible');
-    let mode = 'zoom', label = '';
-    if (!modalOpen) {
-      if (state.phase === 'mesh' && (state.drawing.length || state.freehandActive)) {
-        mode = 'actions';
-        label = state.freehandActive ? 'Finish stroke' : 'Close polygon';
-      } else if (state.phase === 'bc' && state.bcSel) {
-        mode = 'actions';
-        label = 'Confirm selection';
-      } else if (state.phase === 'solve') {
+    const session = !modalOpen && (
+      (state.phase === 'mesh' && (state.drawing.length || state.freehandActive)) ||
+      (state.phase === 'bc' && state.bcSel) ||
+      (state.phase === 'solve' && (() => {
         const SB = global.MeshStudio && global.MeshStudio.SolverBC;
-        if (SB && typeof SB.selecting === 'function' && SB.selecting()) {
-          mode = 'actions';
-          label = 'Confirm selection';
-        }
-      }
-    }
+        return !!(SB && typeof SB.selecting === 'function' && SB.selecting());
+      })())
+    );
     const undoOn = !!(state.phase === 'mesh' && state.drawMode === 'point' && state.drawing.length > 0);
-    const sig = mode + '|' + label + '|' + (undoOn ? '1' : '0') + '|' + (modalOpen ? 'm' : '');
+    const sig = (session ? '1' : '0') + ':' + (undoOn ? '1' : '0') + (modalOpen ? ':m' : '');
     if (sig === touchSig) return;
     touchSig = sig;
-
-    // Bar contents: hidden elements leave the layout entirely (display:none)
-    // so the visible ✓/✕ and +/− groups stay perfectly symmetric.
-    touchLabel.textContent = label;
-    touchLabel.style.display = label ? '' : 'none';
-    touchActions.style.display = (mode === 'actions' && !modalOpen) ? 'flex' : 'none';
-    touchZoom.style.display = (mode === 'zoom' && !modalOpen) ? 'flex' : 'none';
-    btnTouchUndo.style.display = (mode === 'actions' && undoOn) ? '' : 'none';
-    btnTouchDone.style.display = (mode === 'actions') ? '' : 'none';
-    btnTouchCancel.style.display = (mode === 'actions') ? '' : 'none';
-    touchBar.style.display = (modalOpen ? 'none' : 'flex');
-
-    // The bar lives at the very bottom — never overlap the hint bar:
-    // actions mode hides it, zoom mode lifts it above the bar.
-    if (mode === 'actions') { hintBar.style.display = 'none'; }
-    else { hintBar.style.display = ''; hintBar.style.bottom = '70px'; }
-    if (modalOpen) { hintBar.style.display = ''; hintBar.style.bottom = ''; }
+    hintBar.classList.toggle('is-actions', session); // text ⇄ buttons via CSS
+    btnTouchUndo.style.display = (session && undoOn) ? '' : 'none';
+    btnTouchDone.style.display = session ? '' : 'none';
+    btnTouchCancel.style.display = session ? '' : 'none';
   }
 
   function setHint(text) {
@@ -425,7 +388,8 @@
     else if (state.phase === 'bc') t = HINT_BC_IDLE;
     else if (state.polygon) t = HINT_DONE;
     else t = state.drawMode === 'freehand' ? HINT_FREEHAND : HINT_POINT;
-    hintBar.textContent = touchUI ? localizeTouch(t) : t;
+    if (hintText) hintText.textContent = touchUI ? localizeTouch(t) : t;
+    else if (hintBar) hintBar.textContent = touchUI ? localizeTouch(t) : t;
   }
 
   /* ============================================================
@@ -1203,8 +1167,6 @@
     else pressKey('Escape');
     syncTouchUI();
   });
-  if (btnZoomIn) btnZoomIn.addEventListener('click', () => zoomCenterBy(1.3));
-  if (btnZoomOut) btnZoomOut.addEventListener('click', () => zoomCenterBy(1 / 1.3));
 
   // Image import modal (opened via the "Import" segment in Draw Mode)
   btnImportPick.addEventListener('click', () => fileInput.click());

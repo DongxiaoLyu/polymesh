@@ -211,39 +211,41 @@
   .legend-swatch { width: 12px; height: 12px; border-radius: 4px; flex: 0 0 auto; }
   .legend-dot { border-radius: 50%; }
 
-  /* ---------- Hint bar ---------- */
+  /* ---------- Bottom pill (single element, two modes) ----------
+     Idle: the pill shows the hint TEXT on a DARK glass background. While a
+     drawing / BC selection session is active the SAME pill morphs into a
+     LIGHT pill with three flat symbol buttons (✓ confirm, ↩ undo, ✕ cancel)
+     — no text, no overlap possible. All buttons share one size and a flat
+     2D look: plain glyphs, subtle grey fill + hairline border, no primary
+     fill, no 3D. */
   .hint-bar {
-    position: absolute; bottom: 18px; left: 50%; transform: translateX(-50%);
-    background: var(--panel); backdrop-filter: var(--blur); -webkit-backdrop-filter: var(--blur);
-    border-radius: 20px; box-shadow: var(--shadow); border: 1px solid rgba(255,255,255,0.6);
-    padding: 9px 18px; font-size: 12.5px; color: var(--text); z-index: 10;
-    text-align: center; max-width: calc(100% - 40px); pointer-events: none;
-    transition: opacity .25s ease;
+    position: absolute; bottom: 16px; left: 50%; transform: translateX(-50%);
+    display: flex; align-items: center; justify-content: center; gap: 6px;
+    min-height: 40px; max-width: calc(100% - 24px); box-sizing: border-box;
+    background: rgba(30, 30, 32, 0.9); color: #fff;
+    border-radius: 999px; box-shadow: var(--shadow);
+    padding: 4px 14px; z-index: 26; pointer-events: none;
+    transition: background .15s ease, padding .15s ease;
   }
-
-  /* ---------- Touch adaptations (Apple-style capability enhancement) ----------
-     Desktop flows (wheel / double-click / Enter / Esc) are untouched; the
-     contextual action bar + zoom buttons appear only on coarse/touch devices
-     (body.touch-ui). The bar sits at the very bottom and the hint bar moves
-     up / hides so they never overlap. All buttons are equal-width and hidden
-     elements are removed from layout (display:none) so ✓/✕ and +/− stay
-     perfectly symmetric. */
-  body.touch-ui .touch-bar { display: flex; }
-  .touch-bar {
-    display: none; position: absolute; bottom: 16px; left: 50%;
-    transform: translateX(-50%);
-    align-items: center; justify-content: center; gap: 6px;
-    background: var(--panel); backdrop-filter: var(--blur); -webkit-backdrop-filter: var(--blur);
-    border-radius: 14px; box-shadow: var(--shadow);
-    border: 1px solid rgba(255,255,255,0.6);
-    padding: 5px 8px; z-index: 26;
+  .hint-bar.is-actions {
+    background: rgba(255, 255, 255, 0.97); color: var(--text);
+    border: 1px solid rgba(0, 0, 0, 0.08);
+    pointer-events: auto; padding: 4px 6px;
   }
-  .touch-label { font-size: 12px; color: var(--text); margin: 0 4px 0 0; white-space: nowrap; }
-  #touchActions, #touchZoom { display: none; align-items: center; gap: 6px; }
-  .touch-bar .btn {
-    padding: 5px 8px; font-size: 13px; min-width: 34px; min-height: 30px;
-    text-align: center;
+  .pill-text { font-size: 12.5px; line-height: 1.35; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .pill-actions { display: none; align-items: center; gap: 6px; }
+  .hint-bar.is-actions .pill-text { display: none; }
+  .hint-bar.is-actions .pill-actions { display: flex; }
+  .touch-btn {
+    display: grid; place-items: center; width: 40px; height: 34px;
+    background: rgba(0, 0, 0, 0.05);
+    border: 1px solid rgba(0, 0, 0, 0.12); border-radius: 8px;
+    color: #1d1d1f; font-size: 16px; line-height: 1; font-family: inherit;
+    cursor: pointer; padding: 0;
+    transition: background .12s ease, transform .05s ease;
   }
+  .touch-btn:hover { background: rgba(0, 0, 0, 0.09); }
+  .touch-btn:active { transform: scale(0.93); }
 
   /* ---------- Toast ---------- */
   .toast {
@@ -541,21 +543,15 @@
     </aside>
 
     <div class="toast" id="toast"></div>
-    <div class="hint-bar" id="hintBar">Click to place polygon vertices · double-click, Enter, or click the first point to close</div>
-
-    <!-- Touch action bar: hidden by default; shown on coarse/touch devices
-         (body.touch-ui) while drawing / selecting, giving visible equivalents
-         of Enter / Backspace / Esc plus zoom buttons. -->
-    <div class="touch-bar" id="touchBar" aria-live="polite">
-      <span class="touch-label" id="touchLabel"></span>
-      <span id="touchActions">
-        <button id="btnTouchDone" class="btn btn-primary" aria-label="Confirm">✓</button>
-        <button id="btnTouchUndo" class="btn btn-ghost" aria-label="Undo">↩</button>
-        <button id="btnTouchCancel" class="btn btn-ghost" aria-label="Cancel">✕</button>
-      </span>
-      <span id="touchZoom">
-        <button id="btnZoomIn" class="btn btn-ghost" aria-label="Zoom in">＋</button>
-        <button id="btnZoomOut" class="btn btn-ghost" aria-label="Zoom out">−</button>
+    <!-- Bottom pill (single element, two modes): shows the hint text when
+         idle; while drawing / selecting on a touch device it morphs into
+         flat symbol buttons (✓ confirm · ↩ undo · ✕ cancel). -->
+    <div class="hint-bar" id="hintBar">
+      <span class="pill-text" id="hintText">Click to place polygon vertices · double-click, Enter, or click the first point to close</span>
+      <span class="pill-actions" id="touchActions" aria-live="polite">
+        <button id="btnTouchDone" class="touch-btn" aria-label="Confirm">✓</button>
+        <button id="btnTouchUndo" class="touch-btn" aria-label="Undo">↩</button>
+        <button id="btnTouchCancel" class="touch-btn" aria-label="Cancel">✕</button>
       </span>
     </div>
 
