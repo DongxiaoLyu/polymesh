@@ -177,6 +177,19 @@ global.document = {
 
 /* ---------- Boot the real app (init runs immediately) ---------- */
 
+// Pre-build the BC scope segmented control (All / Boundary only) so the
+// solver-bc wiring finds its two .seg children.
+{
+  const scopeEl = makeEl('bcScopeSeg');
+  for (const v of ['all', 'boundary']) {
+    const s = makeEl('seg-scope-' + v);
+    s.dataset.scope = v;
+    s.classList.add('seg');
+    s.textContent = v === 'all' ? 'All nodes' : 'Boundary only';
+    scopeEl.appendChild(s);
+  }
+}
+
 require('./js/constants.js');
 require('./js/geometry.js');
 require('./js/grid.js');
@@ -346,6 +359,44 @@ console.log('OK: import modal opens via Draw Mode "Import" segment, examples dra
   if (ms.App.state.pointLoads.length !== 1) throw new Error('point load not in state');
   console.log('OK: point load confirmed & listed (' + bcListText.split('—').join(' - ').trim() + ')');
 
+  // --- selection scope: All / Boundary only (node BCs) ---
+  const scopeSegs = elements.get('bcScopeSeg').children;
+  if (scopeSegs.length !== 2) throw new Error('scope segmented control should have 2 segments, got ' + scopeSegs.length);
+  if (ms.SolverBC.scope !== 'all') throw new Error('default node scope should be "all"');
+  // switch to Boundary only → picking a big interior point must now be ignored
+  scopeSegs[1].listeners.click[0]();                 // Boundary only
+  if (ms.SolverBC.scope !== 'boundary') throw new Error('scope did not switch to boundary');
+  bcButtons.children[0].listeners.click[0]();        // Add Point Load (boundary-scoped)
+  // try an interior point (the imported filled rectangle centre ~ (400, 300))
+  canvasEl.listeners.pointermove[0]({ clientX: 400, clientY: 300, pointerId: 7 });
+  canvasEl.listeners.pointerdown[0]({ clientX: 400, clientY: 300, pointerId: 7 });
+  canvasEl.listeners.pointerup[0]({});
+  global._listeners.keydown[0](key('Enter'));        // no node selected → toast, no modal
+  if (bcModal.classList.contains('visible')) throw new Error('interior click should NOT open the modal in boundary scope');
+  if (!/BOUNDARY node/i.test(elements.get('toast').textContent)) throw new Error('boundary-only miss toast wrong: ' + elements.get('toast').textContent);
+  // box-select everything → only boundary nodes are kept
+  bcButtons.children[0].listeners.click[0]();
+  canvasEl.listeners.pointermove[0]({ clientX: 100, clientY: 100, pointerId: 8 });
+  canvasEl.listeners.pointerdown[0]({ clientX: 100, clientY: 100, pointerId: 8 });
+  canvasEl.listeners.pointermove[0]({ clientX: 700, clientY: 500, pointerId: 8 });
+  canvasEl.listeners.pointerup[0]({});
+  global._listeners.keydown[0](key('Enter'));
+  if (!bcModal.classList.contains('visible')) throw new Error('boundary box-select should open the modal');
+  if (!/node\(s\) selected/.test(textOf(elements.get('bcCount')))) throw new Error('modal count missing for boundary selection');
+  elements.get('bcName').value = 'BoundaryLoad';
+  bcField('fx').value = '50';
+  bcField('fy').value = '0';
+  clickById('btnBcOk');
+  const bLoad = ms.App.state.pointLoads.find(p => p.name === 'BoundaryLoad');
+  if (!bLoad) throw new Error('boundary point load not stored');
+  if (!bLoad.nodeIds.length) throw new Error('boundary point load should have ≥1 node');
+  for (const id of bLoad.nodeIds) {
+    if (!ms.SolverBC.boundaryNodes.has(id)) throw new Error('boundary scope admitted interior node ' + id);
+  }
+  scopeSegs[0].listeners.click[0]();                 // back to All for the rest of the flow
+  if (ms.SolverBC.scope !== 'all') throw new Error('scope did not return to all');
+  console.log('OK: All/Boundary-only scope restricts point-load picking to boundary nodes');
+
   // support via box selection → type input (Fixed/Hinge)
   bcButtons.children[2].listeners.click[0]();     // Add Support
   canvasEl.listeners.pointermove[0]({ clientX: 400, clientY: 300, pointerId: 2 });
@@ -405,9 +456,11 @@ console.log('OK: import modal opens via Draw Mode "Import" segment, examples dra
   }
   console.log('OK: uniform pressure on boundary edges only (scalar p)');
 
-  // delete the point load group via the list ✕ (kept: list deletion path)
-  const firstRowDel = elements.get('solverBcList').children[0].children[1];
-  firstRowDel.listeners.click[0]();
+  // delete the two point-load rows via the list ✕ (list deletion path)
+  for (let i = 0; i < 2; i++) {
+    const del = elements.get('solverBcList').children[0].children[1];
+    del.listeners.click[0]();
+  }
   if (ms.App.state.pointLoads.length !== 0) throw new Error('point load delete failed');
   if (!/Pressure_1/.test(textOf(elements.get('solverBcList')))) throw new Error('pressure should survive the delete');
   console.log('OK: group deletion works per row');

@@ -71,9 +71,12 @@ validates that the model is complete before entering).
    2D Poisson Equation), and the panel shows the BC kinds that problem accepts:
    - *Elasticity* — **Point Load / Support**: click nodes or drag a box to select
      several, press Enter, then name the group and enter the load vector (or pick
-     Fixed / Hinge). **Pressure**: click or box-select boundary edges (interior
-     edges are not selectable), then name the group and enter one scalar pressure
-     value — positive p pushes INTO the domain, negative pulls outward.
+     Fixed / Hinge). A **Select: All nodes / Boundary only** toggle restricts
+     node picking to the domain boundary — ideal when loads/supports belong on
+     the geometric outline. **Pressure**: click or box-select boundary edges
+     (interior edges are not selectable), then name the group and enter one
+     scalar pressure value — positive p pushes INTO the domain, negative pulls
+     outward.
    - *Poisson* — **Temperature (Dirichlet) / Heat Flux (Neumann)**: boundary edges
      only; enter a name and a scalar value.
    - Switching problems clears the BCs (they are problem-specific).

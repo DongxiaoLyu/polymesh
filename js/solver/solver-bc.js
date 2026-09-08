@@ -57,6 +57,8 @@
   const bcList     = document.getElementById('solverBcList');
   const bcSection  = document.getElementById('solverBcSection');
   const bcDefault  = document.getElementById('solverBcDefault');
+  const bcScopeWrap = document.getElementById('bcScopeWrap');
+  const bcScopeSeg  = document.getElementById('bcScopeSeg');
   const modal      = document.getElementById('bcModal');
   const modalTitle = document.getElementById('bcTitle');
   const modalName  = document.getElementById('bcName');
@@ -73,6 +75,9 @@
   let boundary = [];      // ring-ordered boundary edges [{a, b}] of the current mesh
   let boundaryPairs = []; // [[a, b], ...] view of boundary for Mesh.nearestEdge/edgesInBox
   let boundarySet = null; // Set of undirected keys 'a_b'
+  let boundaryNodes = new Set(); // node ids lying on the domain boundary
+  let nodeScope = 'all';  // 'all' | 'boundary' — restrict node BC picking to
+                          // boundary nodes only (remembered across sessions)
   let lastMesh = null;
 
   const worldDist = d => d / state.view.zoom;
@@ -115,6 +120,7 @@
     boundary = [];
     boundaryPairs = [];
     boundarySet = new Set();
+    boundaryNodes = new Set();
     if (!mesh) return;
     const count = new Map(); // key -> { a, b (ring order), n }
     for (const el of mesh.elements) {
@@ -132,6 +138,8 @@
         boundary.push(e);
         boundaryPairs.push([e.a, e.b]);
         boundarySet.add(e.a < e.b ? e.a + '_' + e.b : e.b + '_' + e.a);
+        boundaryNodes.add(e.a);
+        boundaryNodes.add(e.b);
       }
     }
   }
@@ -153,10 +161,18 @@
       box: null, dragStart: null, dragging: false,
     };
     state.bcSel = sel;
-    const what = meta.target === 'nodes' ? 'nodes'
-               : meta.target === 'edges' ? 'edges' : 'boundary edges';
-    App.setHint('Click or box-select ' + what + ' · Enter to confirm · Esc to cancel');
+    App.setHint(selHint());
     App.scheduleRender();
+  }
+
+  /** Hint for the live session, honouring the boundary-only scope. */
+  function selHint() {
+    if (!sel) return '';
+    const meta = sel.meta;
+    const scope = (meta.target === 'nodes' && nodeScope === 'boundary') ? ' BOUNDARY ' : ' ';
+    const what = meta.target === 'nodes' ? scope + 'nodes'
+               : meta.target === 'edges' ? 'edges' : 'boundary edges';
+    return 'Click or box-select ' + what + ' · Enter to confirm · Esc to cancel';
   }
 
   function cancelSel() {
@@ -187,8 +203,10 @@
     const mesh = state.mesh;
     if (!mesh) return;
     if (meta.target === 'nodes') {
-      const id = Mesh.nearestNode(mesh, p, worldDist(Constants.BC_SELECT_RADIUS));
-      if (id < 0) { App.showToast('No node near the click'); return; }
+      // nodeScope 'boundary' restricts picking to boundary nodes only.
+      const allowed = nodeScope === 'boundary' ? boundaryNodes : null;
+      const id = nearestNode(mesh, p, worldDist(Constants.BC_SELECT_RADIUS), allowed);
+      if (id < 0) { App.showToast(nodeScope === 'boundary' ? 'No BOUNDARY node near the click' : 'No node near the click'); return; }
       if (sel.nodes.has(id)) sel.nodes.delete(id);
       else sel.nodes.add(id);
       return;
@@ -203,12 +221,26 @@
     else sel.edges.set(key, [a, b]);
   }
 
+  /** Nearest mesh node within radius — restricted to `allowed` ids when
+      given (e.g. boundary-only picking). */
+  function nearestNode(mesh, p, radius, allowed) {
+    let best = -1, bestD = radius;
+    for (let i = 0; i < mesh.nodes.length; i++) {
+      if (allowed && !allowed.has(i)) continue;
+      const d = Math.hypot(mesh.nodes[i].x - p.x, mesh.nodes[i].y - p.y);
+      if (d <= bestD) { bestD = d; best = i; }
+    }
+    return best;
+  }
+
   function applyBox(box) {
     const meta = sel.meta;
     const mesh = state.mesh;
     if (!box || !mesh) return;
     if (meta.target === 'nodes') {
-      for (const id of Mesh.nodesInBox(mesh, box)) sel.nodes.add(id);
+      for (const id of Mesh.nodesInBox(mesh, box)) {
+        if (nodeScope !== 'boundary' || boundaryNodes.has(id)) sel.nodes.add(id);
+      }
       return;
     }
     const pool = selectableEdges();
@@ -527,10 +559,27 @@
 
   /* ---------- BC add-buttons + section hint (per active block) ---------- */
 
+  /** The All/Boundary-only scope toggle only matters for BC kinds that
+      pick NODES (point loads, supports); edge/boundary-edge BCs already
+      have a fixed target set. */
+  function blockHasNodeBcs(block) {
+    return !!(block && block.bcs && block.bcs.some(b => b.target === 'nodes'));
+  }
+
+  function syncScopeSeg() {
+    if (!bcScopeWrap || !bcScopeSeg) return;
+    const block = currentBlock();
+    const show = !!(block && block.available && blockHasNodeBcs(block));
+    bcScopeWrap.style.display = show ? '' : 'none';
+    const segs = Array.from(bcScopeSeg.querySelectorAll('.seg'));
+    segs.forEach(s => s.classList.toggle('active', s.dataset.scope === nodeScope));
+  }
+
   function renderBcButtons() {
     const block = currentBlock();
     const show = !!(block && block.available && block.bcs && block.bcs.length);
     if (bcSection) bcSection.style.display = show ? '' : 'none';
+    syncScopeSeg();
     if (!bcButtons) return;
     bcButtons.replaceChildren();
     if (!show) return;
@@ -580,6 +629,25 @@
       ctx.beginPath();
       for (const e of boundary) { ctx.moveTo(node(e.a).x, node(e.a).y); ctx.lineTo(node(e.b).x, node(e.b).y); }
       ctx.stroke();
+    }
+
+    // Boundary-only node session: hint which nodes are pickable — non-boundary
+    // nodes are greyed out, boundary nodes get a soft accent halo.
+    if (sel && sel.meta && sel.meta.target === 'nodes' && nodeScope === 'boundary') {
+      for (let i = 0; i < mesh.nodes.length; i++) {
+        if (boundaryNodes.has(i)) continue;
+        ctx.beginPath();
+        ctx.arc(node(i).x, node(i).y, 4 * k, 0, Math.PI * 2);
+        ctx.fillStyle = 'rgba(0,0,0,0.14)';
+        ctx.fill();
+      }
+      ctx.strokeStyle = 'rgba(0,113,227,0.55)';
+      ctx.lineWidth = 2 * k;
+      for (const id of boundaryNodes) {
+        ctx.beginPath();
+        ctx.arc(node(id).x, node(id).y, 5 * k, 0, Math.PI * 2);
+        ctx.stroke();
+      }
     }
 
     // Confirmed scalar groups: Dirichlet = thick colored edge + dot,
@@ -709,6 +777,30 @@
     App.showToast('Solver core is under construction — coming soon');
   });
 
+  /* ---------- Selection-scope toggle (All / Boundary only) ---------- */
+
+  if (bcScopeSeg) {
+    bcScopeSeg.querySelectorAll('.seg').forEach(seg => {
+      seg.addEventListener('click', () => {
+        const v = seg.dataset.scope || 'all';
+        if (v === nodeScope) return;
+        nodeScope = v;
+        // If a node-picking session is live, drop nodes that are no longer
+        // selectable under the new scope.
+        if (sel && sel.meta && sel.meta.target === 'nodes' && nodeScope === 'boundary') {
+          for (const id of [...sel.nodes]) {
+            if (!boundaryNodes.has(id)) sel.nodes.delete(id);
+          }
+        }
+        syncScopeSeg();
+        if (sel) {
+          App.setHint(selHint());
+          App.scheduleRender();
+        }
+      });
+    });
+  }
+
   /* ---------- Public API (read-only for tests / export / future blocks) ---------- */
 
   global.MeshStudio = global.MeshStudio || {};
@@ -717,6 +809,8 @@
     value: {
       get groups() { return groups; },        // scalar groups (poisson/ui.js)
       get boundary() { return boundary; },    // ring-ordered boundary edges
+      get boundaryNodes() { return boundaryNodes; }, // node ids on the domain boundary
+      get scope() { return nodeScope; },      // 'all' | 'boundary' node-picking scope
       // Live session active? (touch bar + tests call this function)
       selecting: () => !!sel,
       computeBoundary,

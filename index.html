@@ -653,6 +653,17 @@
       <div class="panel-section" id="solverBcSection">
         <span class="section-label">Boundary Conditions</span>
         <p class="hint" id="solverBcDefault"></p>
+        <!-- Selection scope: for node-based BCs (point loads / supports)
+             restrict picking to the domain BOUNDARY nodes only. Shown when
+             the active problem has node-target BCs; controlled by
+             js/solver/solver-bc.js. -->
+        <div id="bcScopeWrap" style="display:none; margin-bottom:10px;">
+          <div class="label-row"><label>Select</label></div>
+          <div class="segmented" id="bcScopeSeg">
+            <button class="seg active" data-scope="all">All nodes</button>
+            <button class="seg" data-scope="boundary">Boundary only</button>
+          </div>
+        </div>
         <div class="bc-actions" id="solverBcButtons"></div>
         <div class="bc-list" id="solverBcList"></div>
       </div>
