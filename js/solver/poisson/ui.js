@@ -3,12 +3,14 @@
    ============================================================
    The first shipped solver block. It does NOT touch app.js or the
    shell's internals — it plugs in through the public bridges:
-     - SolverUI.solve        — replaces the "under construction" toast
+     - blocks.poisson.solve — per-problem Solve dispatch (solver-bc);
+                               replaces the "under construction" toast
      - SolverUI.refreshLegend— legend min/max after a solve
      - SolverUI.currentParams / currentProblem / currentField
      - SolverBC.groups       — boundary-condition groups
      - App.registerPhase     — solve-phase lifecycle
-     - state.renderHooks     — heatmap drawing (under the BC markers)
+     - state.underlayHooks   — heatmap drawing (below the mesh, so the
+                               cell edges stay visible on top)
 
    Depends on:  app.js, solver-ui.js, solver-bc.js, matrix.js,
                 vem.js, assembly.js, post.js

@@ -160,12 +160,14 @@
   }
 
   /**
-   * All elastic fields are NODAL: rendered by the SHARED toolkit
-   * (SolverUI.heat.nodalFan), which fan-triangulates every polygon and
-   * fills it with LINEARLY interpolated colours (smooth, no triangle
-   * seams). When the deformed view is OFF the mesh stays UNDEFORMED
-   * (colour-only); when it is ON every vertex is displaced by
-   * scale·(ux, uy), so the coloured heatmap follows the deformed shape.
+   * All elastic fields are NODAL and rendered by the SHARED toolkit
+   * (SolverUI.heat.elements): every polygon is filled with ONE colour —
+   * the mean of its node values — so the underlying cell type stays
+   * readable (uniform fill; there is no per-vertex gradient fan — the
+   * old 'nodalFan' description was stale). When the deformed view is
+   * OFF the mesh stays UNDEFORMED (colour-only); when it is ON every
+   * vertex is displaced by scale·(ux, uy), so the coloured heatmap
+   * follows the deformed shape.
    */
   function drawHeatmap(ctx) {
     if (SolverUI.currentProblem() !== 'elastic') return; // this block only

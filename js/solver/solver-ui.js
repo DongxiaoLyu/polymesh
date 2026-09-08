@@ -310,8 +310,8 @@
   // (gated on the active block's BC requirements).
 
   /* ============================================================
-     Shared heatmap toolkit (colormap sampling + smooth nodal-field
-     fan rendering) — used by every solver block so the look stays
+     Shared heatmap toolkit (colormap sampling + per-element uniform
+     rendering) — used by every solver block so the look stays
      identical and the math lives in ONE place.
      ============================================================ */
 
@@ -394,8 +394,6 @@
 
   /* ---------- Public API ---------- */
 
-  /* ---------- Public API ---------- */
-
   global.MeshStudio = global.MeshStudio || {};
   global.MeshStudio.SolverUI = {
     registerBlock,
@@ -417,10 +415,16 @@
   };
 
   /* ============================================================
-     Scaffolding metadata for the planned blocks (data only — no
-     numerical code). A block becomes selectable once it ships; its
-     real metadata can be re-registered from the block itself
-     (colormaps come from the GRAD_* constants exported above).
+     Scaffolding metadata for the solver blocks (data only — no
+     numerical code):
+       - elastic & dynamics below are 'coming soon' PLACEHOLDERS
+         (available:false). Once they ship, their real metadata is
+         re-registered from the block itself (colormaps come from
+         the GRAD_* constants exported above).
+       - poisson (available:true) is the EXCEPTION: its scaffold IS
+         the real metadata — js/solver/poisson/ui.js never calls
+         registerBlock, it only wires blocks.poisson.solve. Change
+         its fields/params/bcs HERE (keep DEVELOPMENT.md in sync).
      ============================================================ */
 
   // NOTE — registration order also defines the dropdown order and the
@@ -442,7 +446,8 @@
   registerBlock({
     id: 'poisson',
     label: '2D Poisson Equation',
-    available: true, // (real metadata re-registered by js/solver/poisson/ui.js)
+    available: true, // this scaffold IS the real metadata — poisson/ui.js
+                     // never re-registers (only wires blocks.poisson.solve)
     fields: [
       { id: 'temperature', label: 'Temperature', unit: '°C',    legend: GRAD_TEMP },
       { id: 'flux',        label: 'Heat Flux',   unit: 'W/m²',  legend: GRAD_MAG },
@@ -454,9 +459,13 @@
       { id: 'dirichlet', label: 'Temperature', valueLabel: 'u', unit: '°C',    minGroups: 1 },
       { id: 'neumann',   label: 'Heat Flux',   valueLabel: 'q', unit: 'W/m²',  minGroups: 0 },
     ],
-    // Material / source parameters — user-editable with defaults. f is a
-    // uniform heat source over the WHOLE domain (not per-region); k is the
-    // thermal conductivity. Read by the block via SolverUI.currentParams().
+    // Material / source parameters — user-editable with defaults. The
+    // k=10 / f=10 values below are the LIVE shipped defaults (this block
+    // never re-registers; poisson/ui.js's k=1 / f=0 fallbacks are only a
+    // defensive path). dom-smoke.js overrides f->0 for its constant-
+    // Dirichlet check — change these in lockstep with it & DEVELOPMENT.md.
+    // f is a uniform heat source over the WHOLE domain (not per-region);
+    // k is the thermal conductivity. Read via SolverUI.currentParams().
     params: [
       { id: 'k', label: 'Conductivity k', unit: 'W/(m·°C)', value: 10 },
       { id: 'f', label: 'Heat Source f', unit: 'W/m²', value: 10,

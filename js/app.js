@@ -499,6 +499,10 @@
 
   function onPointerDown(e) {
     if (handlePinchEvent('down', e)) return; // 2nd finger → pinch session
+    // Always refresh the cursor on press: phase plugins (solver-bc) and BC
+    // selection read state.cursor, and on TOUCH there is often no preceding
+    // pointermove — otherwise they would anchor on a stale (or null) point.
+    state.cursor = toLocal(e);
     if (phaseHandler('pointerdown', e)) return;
     if (state.phase === 'bc') { bcPointerDown(e); return; }
     if (state.polygon) return; // polygon finalized — use Clear to redraw
@@ -864,6 +868,11 @@
 
   function bcPointerDown(e) {
     if (!state.bcSel) return;
+    // Capture the pointer so the rubber-band keeps tracking the finger even
+    // when it moves over transient overlays / near the canvas edges.
+    if (canvas.setPointerCapture) {
+      try { canvas.setPointerCapture(e.pointerId); } catch (err) { /* noop */ }
+    }
     const p = toLocal(e);
     state.bcSel.dragStart = { x: p.x, y: p.y };
     state.bcSel.dragging = false;

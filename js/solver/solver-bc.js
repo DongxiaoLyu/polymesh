@@ -136,8 +136,13 @@
 
   /* ---------- Pointer / keyboard (routed by app.js to 'solve' phase) ---------- */
 
-  function onPointerDown() {
+  function onPointerDown(e) {
     if (!sel) return;
+    // Keep the drag tracked on touch: capture the pointer so the rubber-band
+    // follows the finger reliably (app.js refreshes state.cursor on press).
+    if (e.target && e.target.setPointerCapture) {
+      try { e.target.setPointerCapture(e.pointerId); } catch (err) { /* noop */ }
+    }
     sel.dragStart = { x: state.cursor.x, y: state.cursor.y };
     sel.dragging = false;
     sel.box = null;
