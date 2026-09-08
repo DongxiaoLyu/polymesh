@@ -20,6 +20,8 @@
        constant f, same quadrature-free load as the Poisson block)
      - point loads / edge tractions q·L/2 per endpoint (trapezoid,
        exact for piecewise-constant tractions on straight edges)
+     - pressureToTraction() converts uniform boundary-pressure BCs
+       (p > 0 pushes INTO the domain) into such edge tractions
    Dirichlet uses the standard symmetric reduction
      K_ff·u_f = b_f − K_fp·u_p   (free / prescribed split)
    solved with the sparse preconditioned CG solver (matrix.js).
@@ -35,6 +37,59 @@
 
   const Matrix = global.MeshStudio.Solver.Matrix;
   const Vem = global.MeshStudio.Solver.Elastic.vem;
+
+  /**
+   * Convert uniform-pressure BC groups into constant edge-traction loads.
+   *
+   * pressure groups: [{ name, edges: [[a,b],…], p }] — edges are mesh
+   * boundary edges (0-based, undirected). A pressure p > 0 pushes INTO the
+   * domain, i.e. the traction vector on an edge equals −p·n̂_out where n̂_out
+   * is the OUTWARD unit normal of the boundary edge.
+   *
+   * The outward normal is derived from the element ring order: the domain
+   * boundary consists of edges used by exactly ONE element, and that
+   * element stores its vertices CCW (shoelace-positive), so for the ring
+   * edge (a→b) the outward normal is (dy, −dx)/L with (dx,dy) = b−a.
+   *
+   * Returns a `traction` array consumable by solveElastic:
+   *   [{ a, b, fx, fy }]  — constant line load per unit length.
+   */
+  function pressureToTraction(mesh, pressureGroups) {
+    if (!pressureGroups || !pressureGroups.length) return [];
+    const nodes = mesh.nodes;
+
+    // Boundary ring-order: first orientation seen for edges used once.
+    const seen = new Map(); // key 'a_b' -> { a, b (ring order), n }
+    for (const el of mesh.elements) {
+      const ids = el.nodeIds;
+      for (let i = 0; i < ids.length; i++) {
+        const a = ids[i], b = ids[(i + 1) % ids.length];
+        const k = a < b ? a + '_' + b : b + '_' + a;
+        const e = seen.get(k);
+        if (e) e.n++;
+        else seen.set(k, { a, b, n: 1 });
+      }
+    }
+    const ring = new Map(); // key -> ring-ordered [ra, rb]
+    for (const e of seen.values()) if (e.n === 1) ring.set((e.a < e.b ? e.a + '_' + e.b : e.b + '_' + e.a), [e.a, e.b]);
+
+    const out = [];
+    for (const g of pressureGroups) {
+      for (const [ua, ub] of g.edges) {
+        const k = ua < ub ? ua + '_' + ub : ub + '_' + ua;
+        const ro = ring.get(k);
+        if (!ro) continue; // not a boundary edge — ignore defensively
+        const [ra, rb] = ro;
+        const dx = nodes[rb].x - nodes[ra].x;
+        const dy = nodes[rb].y - nodes[ra].y;
+        const L = Math.hypot(dx, dy);
+        if (L < 1e-14) continue;
+        // inward normal (p>0 pushes into the domain): −n̂_out = (−dy, dx)/L
+        out.push({ a: ua, b: ub, fx: -g.p * dy / L, fy: g.p * dx / L });
+      }
+    }
+    return out;
+  }
 
   /**
    * Solve the plane-stress elasticity problem on an existing mesh.
@@ -160,5 +215,5 @@
   global.MeshStudio = global.MeshStudio || {};
   global.MeshStudio.Solver = global.MeshStudio.Solver || {};
   global.MeshStudio.Solver.Elastic = global.MeshStudio.Solver.Elastic || {};
-  global.MeshStudio.Solver.Elastic.assembly = { solveElastic };
+  global.MeshStudio.Solver.Elastic.assembly = { solveElastic, pressureToTraction };
 })(window);

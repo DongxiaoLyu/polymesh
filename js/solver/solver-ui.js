@@ -1,17 +1,21 @@
 /* ============================================================
-   solver-ui.js — Shared solve-phase shell (NOT a problem block)
+   solver-ui.js — Shared solver shell (NOT a problem block)
    ============================================================
-   Drives the solver components revealed in the 'solve' phase:
-     - problem-type dropdown   (#solverProblemSel)
-     - heatmap display field   (#solverFieldSel)
-     - Solve button            (#btnSolve)
-     - heatmap legend          (#solverInfoPanel)
+   Owns the solver metadata registry & the shared solve-phase UI:
+     - problem-type dropdown (#solverProblemSel — lives in the MODEL
+       panel: stage 2; switching problems resets BCs & params)
+     - heatmap display field   (#solverFieldSel, stage 3)
+     - parameters section      (#solverParams, stage 3)
+     - Solve button            (#btnSolve, stage 3)
+     - heatmap legend          (#solverInfoPanel, stage 3)
 
    Each solver block (js/solver/<problem>/) registers its metadata via
    MeshStudio.SolverUI.registerBlock() so the shell can list the problem,
    populate the field dropdown and draw the matching legend — without
-   app.js ever knowing any solver details. The block's own controller
-   additionally registers 'solve' phase handlers via MeshStudio.App.
+   app.js ever knowing any solver details. BC setup itself lives in the
+   unified BC controller (js/solver/solver-bc.js, registered on the
+   'model' phase); the solve-phase panel here only shows the selected
+   problem's fields/params/Solve.
 
    Depends on:  app.js (window.MeshStudio.App)
    Exposes:     window.MeshStudio.SolverUI = { registerBlock, blocks }
@@ -452,13 +456,18 @@
       { id: 'temperature', label: 'Temperature', unit: '°C',    legend: GRAD_TEMP },
       { id: 'flux',        label: 'Heat Flux',   unit: 'W/m²',  legend: GRAD_MAG },
     ],
-    // Solver boundary conditions — entered in the solve phase on BOUNDARY
-    // edges only (js/solver/solver-bc.js). Unassigned edges default to
-    // zero-flux Neumann (insulated); minGroups >= 1 enforces uniqueness.
+    // Unified-BC metadata (consumed by js/solver/solver-bc.js in the
+    // 'model' stage): scalar BCs on boundary edges only. Unassigned
+    // boundary edges default to zero-flux Neumann (insulated); the
+    // scalar store keeps the groups and minGroups>=1 enforces the
+    // Dirichlet requirement for a unique solution.
     bcs: [
-      { id: 'dirichlet', label: 'Temperature', valueLabel: 'u', unit: '°C',    minGroups: 1 },
-      { id: 'neumann',   label: 'Heat Flux',   valueLabel: 'q', unit: 'W/m²',  minGroups: 0 },
+      { id: 'dirichlet', label: 'Temperature', store: 'scalar', target: 'boundaryEdges',
+        input: 'scalar', valueLabel: 'u', unit: '°C', defaultName: 'Temperature', minGroups: 1 },
+      { id: 'neumann',   label: 'Heat Flux',   store: 'scalar', target: 'boundaryEdges',
+        input: 'scalar', valueLabel: 'q', unit: 'W/m²', defaultName: 'Flux', minGroups: 0 },
     ],
+    bcDefault: 'Unassigned boundary edges default to zero-flux Neumann (insulated).',
     // Material / source parameters — user-editable with defaults. The
     // k=10 / f=10 values below are the LIVE shipped defaults (this block
     // never re-registers; poisson/ui.js's k=1 / f=0 fallbacks are only a

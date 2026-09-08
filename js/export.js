@@ -1,5 +1,5 @@
 /* ============================================================
-   export.js — TXT mesh output (nodes + elements)
+   export.js — TXT mesh output (nodes + elements + conditions)
    ============================================================
    Produces the classic FEA/VEM mesh file format:
      # NODES (ID X Y)
@@ -8,6 +8,11 @@
      # ELEMENTS (ID NODE_1 NODE_2 ... NODE_N)
      1 n1 n2 ...
    IDs are 1-based; fields are space-delimited (no commas).
+
+   Mechanical BC sections (point loads / boundary pressures / supports)
+   and scalar BC sections (Poisson temperature / heat flux on boundary
+   edges) can be appended via the optional conditions argument; mesh
+   stage exports simply omit them (empty arrays -> no sections).
 
    buildTxt is a pure function (no DOM) — easy to test.
 
@@ -37,16 +42,21 @@
    *   coordinates are uniformly scaled (aspect preserved) and centered so
    *   the whole mesh fits inside [0, fit] x [0, fit].
    *
-   * conditions (optional) — { pointLoads, distLoads, supports }:
+   * conditions (optional) — { pointLoads, pressures, supports, scalarBcs }:
    *   pointLoads: [{ name, nodeIds[], fx, fy }]      (node ids 0-based)
-   *   distLoads:  [{ name, edges: [[a,b],...], fx, fy }]
+   *   pressures:  [{ name, edges: [[a,b],...], p }]  — uniform pressure on
+   *                boundary edges (p > 0 pushes into the domain)
    *   supports:   [{ name, type: 'fixed'|'hinge', nodeIds[] }]
-   *   These append three group-block sections:
+   *   scalarBcs:  [{ section, unit, name, edges: [[a,b],…], value }]
+   *     (scalar values on boundary edges, e.g. Poisson Dirichlet /
+   *     Neumann groups; `section` names the file-format header)
+   *   These append group-block sections:
    *     # POINT LOADS (NAME COUNT | NODE LINES | FX FY)
-   *     # DISTRIBUTED LOADS (NAME COUNT | EDGE LINES N1 N2 | FX FY)
+   *     # SURFACE PRESSURES (NAME COUNT | EDGE LINES | P)
    *     # SUPPORTS (NAME TYPE COUNT | NODE LINES)
+   *     # TEMPERATURE (DIRICHLET) (NAME COUNT | EDGE LINES | VALUE …)
    *   Each group = one header line (name [+ type] + member count),
-   *   then one line per member, then one vector line (loads only).
+   *   then one line per member, then one value/vector line.
    *   All node/edge ids in the file are 1-based.
    */
   function buildTxt(mesh, opts, conditions) {
@@ -92,13 +102,14 @@
 
     // 3. Optional boundary-condition sections.
     const c = conditions || {};
-    appendConditions(lines, c.pointLoads || [], c.distLoads || [], c.supports || []);
+    appendConditions(lines, c.pointLoads || [], c.pressures || [], c.supports || []);
+    appendScalarConditions(lines, c.scalarBcs || []);
 
     return lines.join('\n');
   }
 
-  /** Append the POINT LOADS / DISTRIBUTED LOADS / SUPPORTS sections. */
-  function appendConditions(lines, pointLoads, distLoads, supports) {
+  /** Append the POINT LOADS / SURFACE PRESSURES / SUPPORTS sections. */
+  function appendConditions(lines, pointLoads, pressures, supports) {
     if (pointLoads.length) {
       lines.push('');
       lines.push('# POINT LOADS (NAME COUNT | NODE LINES | FX FY)');
@@ -108,13 +119,13 @@
         lines.push(fmt(g.fx) + ' ' + fmt(g.fy));
       }
     }
-    if (distLoads.length) {
+    if (pressures.length) {
       lines.push('');
-      lines.push('# DISTRIBUTED LOADS (NAME COUNT | EDGE LINES N1 N2 | FX FY)');
-      for (const g of distLoads) {
+      lines.push('# SURFACE PRESSURES (NAME COUNT | EDGE LINES | P)');
+      for (const g of pressures) {
         lines.push(g.name + ' ' + g.edges.length);
         g.edges.forEach(([a, b]) => lines.push((a + 1) + ' ' + (b + 1)));
-        lines.push(fmt(g.fx) + ' ' + fmt(g.fy));
+        lines.push(fmt(g.p));
       }
     }
     if (supports.length) {
@@ -124,6 +135,26 @@
         lines.push(g.name + ' ' + g.type + ' ' + g.nodeIds.length);
         g.nodeIds.forEach(id => lines.push(String(id + 1)));
       }
+    }
+  }
+
+  /** Append the scalar BC sections (Poisson temperature / heat flux on
+      boundary edges). Each scalarBcs item is
+        { section, unit, name, edges: [[a,b],…], value }
+      with 0-based edge ids; ids are printed 1-based. */
+  function appendScalarConditions(lines, scalarBcs) {
+    // Group consecutive items by their section header.
+    let lastSection = null;
+    for (const s of scalarBcs) {
+      if (s.section !== lastSection) {
+        lines.push('');
+        lines.push('# ' + s.section + ' (NAME COUNT | EDGE LINES | VALUE' +
+                   (s.unit ? ' | UNIT ' + s.unit : '') + ')');
+        lastSection = s.section;
+      }
+      lines.push(s.name + ' ' + s.edges.length);
+      s.edges.forEach(([a, b]) => lines.push((a + 1) + ' ' + (b + 1)));
+      lines.push(fmt(s.value));
     }
   }
 

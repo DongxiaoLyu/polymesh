@@ -5,7 +5,7 @@
    touch app.js or the shell's internals — it plugs in through the
    public bridges:
      - SolverUI.registerBlock — replaces the 'coming soon' placeholder
-       metadata with the real one (fields / E-ν-deform params / bcNote)
+       metadata with the real one (fields / E-ν-deform params / bcs)
      - blocks.elastic.solve   — per-problem Solve dispatch (solver-bc)
      - SolverUI.currentParams / currentProblem / currentField
      - App.registerPhase      — solve-phase lifecycle (heat + deform hooks)
@@ -21,17 +21,22 @@
    suppressed via the per-frame predicate state.hideMeshFn (the block owns
    the domain rendering).
 
-   Boundary conditions are NOT re-entered here: elasticity loads and
-   supports are mechanics semantics defined in the PRE-PROCESSOR BC
-   phase (point loads, distributed edge loads, fixed/hinge supports),
-   which is exactly the data this block consumes:
-     - point/distributed load vectors follow the FEM convention
-       (+X right, +Y UP) and are flipped into the mesh's y-down screen
-       frame here (fy → −fy) before assembly;
+   Boundary conditions are set in the MODEL stage by the unified BC
+   controller (js/solver/solver-bc.js) from this block's `bcs` metadata
+   (mechanical semantics: point loads, uniform boundary pressure,
+   supports). Those BCs are written to state
+   (pointLoads/pressures/supports) — the exact data this block consumes:
+     - point loads follow the FEM convention (+X right, +Y UP) and are
+       flipped into the mesh's y-down screen frame here (fy → −fy) before
+       assembly;
+     - uniform pressure groups are converted to inward-normal edge
+       tractions by assembly.pressureToTraction (p > 0 pushes INTO the
+       domain);
      - fixed and hinge supports are equivalent at k=1 (both fix the two
        translational DOFs) → homogeneous Dirichlet on both components;
-     - Solve is gated on ≥ 2 distinct support nodes (fewer leaves a
-       rigid-body rotation that makes the stiffness singular).
+     - the unified controller gates the solve stage on ≥ 2 distinct
+       support nodes (fewer leaves a rigid-body rotation that makes the
+       stiffness singular); runSolve re-checks as a safety net.
 
    Depends on:  app.js, solver-ui.js, solver-bc.js, matrix.js,
                 vem.js, assembly.js, post.js
@@ -55,11 +60,29 @@
     id: 'elastic',
     label: '2D Elasticity',
     available: true,
-    // This problem CONSUMES the pre-processing mechanical boundary
-    // conditions (loads/supports), so the renderer keeps drawing their
-    // markers during the solve phase. Problems without this flag (e.g.
-    // Poisson, whose scalar BCs are different physics) hide them.
+    // This problem consumes MECHANICAL boundary conditions (loads /
+    // supports), so the renderer keeps drawing their markers during the
+    // model & solve stages. Problems without this flag (e.g. Poisson,
+    // whose scalar BCs are different physics) hide them.
     usesPreprocBCs: true,
+    // Unified-BC metadata (consumed by js/solver/solver-bc.js in the
+    // 'model' stage): mechanical BCs stored in the state arrays below.
+    // minMembers: 2 on `support` — at least two distinct support nodes
+    // are required to remove the rigid-body modes before solving.
+    bcs: [
+      { id: 'pointload', label: 'Point Load', store: 'mechanical', target: 'nodes',
+        input: 'vector', vecLabel: 'Load vector (x, y) — +X right, +Y up',
+        unit: '', defaultName: 'Point_load' },
+      // Uniform pressure on BOUNDARY edges (like Poisson's boundary-edge
+      // BCs): one scalar value per group, applied along the inward normal.
+      // p > 0 pushes INTO the domain; p < 0 pulls outward.
+      { id: 'pressure', label: 'Pressure', store: 'mechanical', target: 'boundaryEdges',
+        input: 'scalar', valueLabel: 'p', unit: '', defaultName: 'Pressure',
+        hint: 'Uniform pressure on boundary edges — positive p pushes INTO the domain, negative pulls outward' },
+      { id: 'support', label: 'Support', store: 'mechanical', target: 'nodes',
+        input: 'type', options: ['fixed', 'hinge'], defaultName: 'Support', minMembers: 2 },
+    ],
+    bcDefault: 'Add supports (≥ 2 distinct nodes) and loads. Fixed/Hinge both pin ux & uy at k=1.',
     fields: [
       { id: 'displacement', label: 'Displacement', unit: 'mm',  legend: SolverUI.gradients.displacement },
       { id: 'strain',       label: 'Strain',       unit: '—',   legend: SolverUI.gradients.strain },
@@ -107,15 +130,15 @@
       prescribed[id + n] = 0;
     }
 
-    // ---- loads: FEM convention (+Y up) → screen frame (y down) ----
+    // ---- loads: point forces follow the FEM convention (+Y up) and are
+    // flipped into the mesh's y-down screen frame; uniform pressures are
+    // scalar (p > 0 pushes INTO the domain) and are expanded to edge
+    // tractions along the boundary inward normal by pressureToTraction.
     const point = [];
     for (const g of state.pointLoads) {
       for (const node of g.nodeIds) point.push({ node, fx: g.fx, fy: -g.fy });
     }
-    const traction = [];
-    for (const g of state.distLoads) {
-      for (const [a, b] of g.edges) traction.push({ a, b, fx: g.fx, fy: -g.fy });
-    }
+    const traction = Elastic.assembly.pressureToTraction(mesh, state.pressures);
 
     let sol;
     try {

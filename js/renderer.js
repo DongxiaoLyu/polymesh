@@ -279,11 +279,15 @@
     function drawConditions(state) {
       const mesh = state.mesh;
       if (!mesh) return;
-      // Pre-processor mechanical BC markers (loads / supports) only belong
-      // to problems that CONSUME them (2D Elasticity, flag usesPreprocBCs).
-      // During the solve phase of problems with different BC physics (e.g.
-      // Poisson's scalar Dirichlet/Neumann) they are hidden — evaluated
-      // per frame against the ACTIVE block's metadata.
+      // Boundary-condition markers exist only from the model stage onwards
+      // (mesh sets no BCs). Mechanical markers (loads/supports — arrows &
+      // triangles, stored in state.pointLoads/pressures/supports) belong to
+      // problems that CONSUME them (2D Elasticity, flag usesPreprocBCs) and
+      // are hidden during the solve phase of scalar problems (e.g. Poisson's
+      // Dirichlet/Neumann); those scalar BCs are drawn by the solver-bc
+      // render hook instead. Live selection (state.bcSel) only exists in
+      // the model stage.
+      if (state.phase === 'mesh') return;
       if (state.phase === 'solve') {
         const UI = global.MeshStudio && global.MeshStudio.SolverUI;
         const blk = UI && UI.currentProblem ? UI.blocks[UI.currentProblem()] : null;
@@ -347,18 +351,32 @@
         }
       });
 
-      state.distLoads.forEach((g, gi) => {
+      state.pressures.forEach((g, gi) => {
         const col = color(gi);
+        const sign = g.p >= 0 ? 1 : -1;           // p>0 pushes INTO the domain
+        const mag = Math.abs(g.p);
         for (const [a, b] of g.edges) {
           const na = mesh.nodes[a], nb = mesh.nodes[b];
-          const mx = (na.x + nb.x) / 2, my = (na.y + nb.y) / 2;
           ctx.beginPath();
           ctx.moveTo(na.x, na.y);
           ctx.lineTo(nb.x, nb.y);
           ctx.strokeStyle = col;
           ctx.lineWidth = 3 * k;
           ctx.stroke();
-          drawArrow(mx, my, g.fx, -g.fy, 14, col, 2, k);
+          // Pressure acts along the boundary normal. The edge pair is
+          // stored in element ring order, so the outward normal is
+          // (b.y−a.y, a.x−b.x); inward (−p) is its negation — flip by sign.
+          const dxn = nb.y - na.y, dyn = na.x - nb.x; // outward normal (unnorm.)
+          const len = Math.hypot(dxn, dyn) || 1;
+          const ux = (-sign * dxn) / len, uy = (-sign * dyn) / len; // force dir
+          // Uniform pressure: three arrows along the edge, scaled by |p|.
+          const nA = Math.min(3, Math.max(1, Math.round(mag)));     // visual density
+          const arrowLen = Math.min(24, mag > 0 ? 14 + 4 * Math.log10(1 + mag) : 12); // px (k applied by drawArrow)
+          for (let t = 1; t <= nA; t++) {
+            const f = t / (nA + 1);
+            drawArrow(na.x + (nb.x - na.x) * f, na.y + (nb.y - na.y) * f,
+                      ux, uy, arrowLen, col, 1.8, k);
+          }
         }
       });
 

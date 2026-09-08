@@ -5,6 +5,10 @@
      - missing element ids / typos in getElementById
      - init errors (resize + loadDemo + listeners)
      - the image-import flow end to end (file → contour → mesh)
+     - the THREE-STAGE workflow (mesh → model → solve):
+         stage 1 = geometry & mesh only (NO boundary conditions)
+         stage 2 = problem choice + unified BC controller
+         stage 3 = parameters, Solve & post-processing
    Not a visual test; asserts no crash and observable outcomes.
 
    Run:  node dom-smoke.js
@@ -48,8 +52,8 @@ function makeEl(id) {
     children: [],
     classList: {
       _s: new Set(),
-      add(c) { this._s.add(c); },
-      remove(c) { this._s.delete(c); },
+      add(c) { c.split(/\s+/).forEach(x => { if (x) this._s.add(x); }); },
+      remove(c) { c.split(/\s+/).forEach(x => { if (x) this._s.delete(x); }); },
       toggle(c, f) { if (f) this._s.add(c); else this._s.delete(c); },
       contains(c) { return this._s.has(c); },
     },
@@ -69,7 +73,51 @@ function makeEl(id) {
     select() {},
     getContext() { return makeCtx(); },
     getBoundingClientRect() { return { width: 800, height: 600, left: 0, top: 0 }; },
+    // Minimal selector engine for the dynamically-built solver controls:
+    //   '.seg', '.seg.active'                — class list match
+    //   '[data-field="fx"]'                  — dataset attr match
+    //   '.cond-vec .cond-input'              — descendant classes
+    _matchSel(sel) {
+      const tokens = sel.trim().split(/\s+/);
+      const attrRe = /^\[data-([a-z]+)="([^"]+)"\]$/;
+      let node = this;
+      for (const t of tokens) {
+        const m = t.match(attrRe);
+        if (m) {
+          if (!node || !node.dataset || node.dataset[m[1]] !== m[2]) return false;
+          continue;
+        }
+        for (const cls of t.split('.').filter(Boolean)) {
+          if (!node || !node.classList || !node.classList.contains(cls)) return false;
+        }
+      }
+      return true;
+    },
+    querySelector(sel) {
+      const stack = [...(this.children || [])];
+      while (stack.length) {
+        const n = stack.pop();
+        if (n._matchSel && n._matchSel(sel)) return n;
+        stack.push(...(n.children || []));
+      }
+      return null;
+    },
+    querySelectorAll(sel) {
+      const out = [];
+      const stack = [...(this.children || [])];
+      while (stack.length) {
+        const n = stack.pop();
+        if (n._matchSel && n._matchSel(sel)) out.push(n);
+        stack.push(...(n.children || []));
+      }
+      return out;
+    },
   };
+  // className <-> classList sync (dynamic solver controls assign className)
+  Object.defineProperty(el, 'className', {
+    get() { return [...el.classList._s].join(' '); },
+    set(v) { el.classList._s = new Set(String(v).split(/\s+/).filter(Boolean)); },
+  });
   elements.set(id, el);
   return el;
 }
@@ -100,17 +148,19 @@ global.Image = class {
 global.document = {
   getElementById(id) { return elements.get(id) || makeEl(id); },
   querySelectorAll(sel) {
-    // Stub the segmented controls (draw modes, grid types, support types).
+    // Stub the segmented controls (draw modes, grid types) + stage dots.
     const defs = {
       '#drawModeSeg .seg': ['point', 'freehand', 'image'],
       '#gridTypeSeg .seg': ['square', 'triangle', 'hexagon'],
-      '#condTypeSeg .seg': ['fixed', 'hinge'],
+      '#stageNav .stage-btn': ['mesh', 'model', 'solve'],
     };
     const values = defs[sel];
     if (!values) return [];
     return values.map(v => {
       const el = makeEl('seg-' + v);
       el.dataset.value = v;
+      el.dataset.phase = v;
+      el.classList.add('stage-btn');
       return el;
     });
   },
@@ -151,6 +201,51 @@ require('./js/solver/elastic/ui.js');
 
 console.log('OK: app booted (resize + loadDemo + listeners)');
 
+/* ---------- Helpers ---------- */
+
+function textOf(el) {
+  return (el.textContent || '') + (el.children || []).map(textOf).join(' ');
+}
+const clickById = id => {
+  const el = elements.get(id);
+  if (!el || !el.listeners.click || !el.listeners.click.length) throw new Error('button #' + id + ' not wired');
+  el.listeners.click[0]();
+};
+const key = (k, target) => ({ key: k, target: target || { tagName: 'BODY' }, preventDefault() {} });
+const stageBtn = ph => {
+  const btn = Array.from(elements.values()).find(e => e.classList && e.classList.contains('stage-btn') && e.dataset.phase === ph);
+  if (!btn) throw new Error('stage dot not found: ' + ph);
+  return btn;
+};
+
+// Read/write a dynamically built BC-modal field by its data-field name.
+function bcField(field) {
+  const root = elements.get('bcFields');
+  const walk = el => {
+    if (!el) return null;
+    if (el.dataset && el.dataset.field === field) return el;
+    for (const c of el.children || []) { const r = walk(c); if (r) return r; }
+    return null;
+  };
+  const el = walk(root);
+  if (!el) throw new Error('BC modal field [' + field + '] not found');
+  return el;
+}
+
+/* ---------- Stage 1: boot + import (mesh only) ---------- */
+
+const stageEl = elements.get('stage');
+const canvasEl = elements.get('canvas');
+const ms = global.MeshStudio;
+if (stageEl.classList.contains('model') || stageEl.classList.contains('solve')) throw new Error('boot should start in the mesh stage');
+if (elements.get('btnDemo').disabled !== false) throw new Error('Demo should be enabled in the mesh stage');
+
+// stage dots 2 & 3 exist and are disabled until a mesh exists — at boot
+// the demo polygon is already loaded, so a mesh exists → dots enabled
+if (stageBtn('model').disabled !== false) throw new Error('Model dot should be enabled after boot/demo mesh');
+if (stageBtn('solve').disabled !== false) throw new Error('Solve dot should be enabled after boot/demo mesh');
+console.log('OK: mesh stage active at boot, stage dots 2/3 enabled once a mesh exists');
+
 /* ---------- Exercise: import modal (via the "Import" draw-mode segment) ---------- */
 
 const importSeg = elements.get('seg-image');
@@ -180,70 +275,11 @@ console.log('OK: import modal opens via Draw Mode "Import" segment, examples dra
   if (elements.get('importModal').classList.contains('visible')) throw new Error('modal still open after import');
   console.log('OK: modal closed after import');
 
-  /* ---------- Exercise: boundary-condition phase ---------- */
-
-  const stageEl = elements.get('stage');
-  const btnPhase = elements.get('btnPhase');
-  const canvasEl = elements.get('canvas');
-
-  // enter the BC phase (a mesh exists after the demo/import)
-  btnPhase.listeners.click[0]();
-  if (!stageEl.classList.contains('bc')) throw new Error('stage did not enter BC phase');
-  if (btnPhase.textContent !== 'Edit Mesh') throw new Error('phase button text wrong: ' + btnPhase.textContent);
-  if (elements.get('btnDemo').disabled !== true) throw new Error('Demo should be locked in BC phase');
-  if (!elements.get('controlsPanel').classList.contains('locked')) throw new Error('controls panel not locked');
-  console.log('OK: BC phase entered, mesh controls locked');
-
-  // start a point-load selection and pick a node at a known grid point
-  elements.get('btnAddPointLoad').listeners.click[0]();
-  const hint = elements.get('hintText').textContent;
-  if (!/Click nodes\/edges/.test(hint)) throw new Error('selection hint not shown: ' + hint);
-
-  const key = (k, target) => ({ key: k, target: target || { tagName: 'BODY' }, preventDefault() {} });
-  canvasEl.listeners.pointermove[0]({ clientX: 400, clientY: 320, pointerId: 1 });
-  canvasEl.listeners.pointerdown[0]({ clientX: 400, clientY: 320, pointerId: 1 });
-  canvasEl.listeners.pointerup[0]({});
-  global._listeners.keydown[0](key('Enter'));   // confirm selection → modal
-  const condModal = elements.get('condModal');
-  if (!condModal.classList.contains('visible')) throw new Error('condition modal did not open');
-  const condName = elements.get('condName');
-  if (condName.value !== 'Point_load_1') throw new Error('default name wrong: ' + condName.value);
-  console.log('OK: point-load selection + modal open (default name ' + condName.value + ')');
-
-  // fill the form and confirm
-  condName.value = 'MyLoad';
-  elements.get('condFx').value = '1000';
-  elements.get('condFy').value = '-250';
-  elements.get('btnCondOk').listeners.click[0]();
-  if (condModal.classList.contains('visible')) throw new Error('condition modal did not close');
-  const textOf = el => (el.textContent || '') + (el.children || []).map(textOf).join(' ');
-  const bcListText = textOf(elements.get('bcList'));
-  if (!/MyLoad/.test(bcListText)) throw new Error('condition not listed: ' + bcListText);
-  console.log('OK: point load added & listed (' + bcListText.split('—').join(' - ').trim() + ')');
-
-  // add a support via box selection
-  elements.get('btnAddSupport').listeners.click[0]();
-  canvasEl.listeners.pointermove[0]({ clientX: 400, clientY: 300, pointerId: 2 });
-  canvasEl.listeners.pointerdown[0]({ clientX: 400, clientY: 300, pointerId: 2 });
-  canvasEl.listeners.pointermove[0]({ clientX: 460, clientY: 360, pointerId: 2 }); // drag → box
-  canvasEl.listeners.pointerup[0]({});
-  global._listeners.keydown[0](key('Enter'));
-  if (!condModal.classList.contains('visible')) throw new Error('support modal did not open');
-  const segHinge = elements.get('seg-hinge');
-  segHinge.listeners.click[0]();                     // choose Hinge
-  condName.value = 'Support_1';
-  elements.get('btnCondOk').listeners.click[0]();
-  const listText = textOf(elements.get('bcList'));
-  if (!/Support_1/.test(listText)) throw new Error('support not listed: ' + listText);
-  console.log('OK: support added via box selection (' + listText.split('—').join(' - ').trim() + ')');
-
-  // Escape cancels a live selection; exit the BC phase re-enables controls
-  elements.get('btnAddDistLoad').listeners.click[0]();
-  global._listeners.keydown[0](key('Escape'));
-  btnPhase.listeners.click[0]();                     // back to mesh phase
-  if (stageEl.classList.contains('bc')) throw new Error('stage still in BC phase');
-  if (elements.get('btnDemo').disabled !== false) throw new Error('Demo should be unlocked after BC phase');
-  console.log('OK: BC phase exited, mesh controls unlocked');
+  // Stage 1 MUST NOT offer any BC capability anymore: no Set-BCs button,
+  // and the model-stage BC sections stay hidden.
+  if (elements.get('btnPhase')) throw new Error('Set BCs button should no longer exist (stage 1 has no BCs)');
+  if (elements.get('btnSolver')) throw new Error('Solver Start launcher should no longer exist (stepper replaced it)');
+  console.log('OK: stage 1 has no BC entry points');
 
   /* ---------- Exercise: wheel zoom + reset view ---------- */
 
@@ -251,344 +287,289 @@ console.log('OK: import modal opens via Draw Mode "Import" segment, examples dra
   if (!wheel) throw new Error('wheel listener not wired');
   wheel({ clientX: 400, clientY: 300, deltaY: -240, preventDefault() {} }); // zoom in — must not throw
   wheel({ clientX: 400, clientY: 300, deltaY: 240, preventDefault() {} });  // zoom out — must not throw
-  const resetBtn = elements.get('btnResetView');
-  if (!resetBtn.listeners.click || !resetBtn.listeners.click.length) throw new Error('Reset View button not wired');
-  resetBtn.listeners.click[0]();                     // resetView — must not throw
+  clickById('btnResetView');                      // resetView — must not throw
+  console.log('OK: wheel zoom + Reset View work in the mesh stage');
 
-  // re-enter the BC phase: a click at a known node position must still select
-  // (pointer coordinates are converted through the view transform)
-  btnPhase.listeners.click[0]();
-  elements.get('btnAddPointLoad').listeners.click[0]();
-  canvasEl.listeners.pointermove[0]({ clientX: 400, clientY: 320, pointerId: 3 });
-  canvasEl.listeners.pointerdown[0]({ clientX: 400, clientY: 320, pointerId: 3 });
-  canvasEl.listeners.pointerup[0]({});
-  global._listeners.keydown[0](key('Enter'));
-  if (!condModal.classList.contains('visible')) throw new Error('node not selected after view ops');
-  console.log('OK: wheel zoom + Reset View work, selection accurate after view changes');
-  global._listeners.keydown[0](key('Escape'));       // close the modal
-  btnPhase.listeners.click[0]();                     // back to mesh phase
+  /* ---------- Exercise: enter the Model stage (problem + unified BC) ---------- */
 
-  /* ---------- Exercise: solver phase (Solver Start button) ---------- */
+  stageBtn('model').listeners.click[0]();
+  if (!stageEl.classList.contains('model')) throw new Error('stage did not enter the model stage');
+  if (!elements.get('controlsPanel').classList.contains('locked')) throw new Error('mesh controls not locked in model stage');
+  if (elements.get('btnDemo').disabled !== true) throw new Error('Demo should be disabled in the model stage');
+  console.log('OK: model stage entered — mesh is locked');
 
-  const btnSolver = elements.get('btnSolver');
-  if (!btnSolver || !btnSolver.listeners.click || !btnSolver.listeners.click.length) {
-    throw new Error('Solver Start button not wired');
-  }
-  btnSolver.listeners.click[0]();                  // enter the solve phase
-  if (!stageEl.classList.contains('solve')) throw new Error('stage did not enter solve phase');
-  if (btnSolver.textContent !== 'Exit Solver') throw new Error('solver button text wrong: ' + btnSolver.textContent);
-  if (!btnSolver.classList.contains('btn-primary')) throw new Error('solver button should be primary in solve phase');
-  if (elements.get('btnDemo').disabled !== true) throw new Error('Demo should be locked in solve phase');
-
-  // solve-phase top-bar actions: Reset View + Hide Panels stay available
-  const btnSolveResetView = elements.get('btnSolveResetView');
-  const btnSolvePanels = elements.get('btnSolvePanels');
-  if (!btnSolveResetView || !btnSolveResetView.listeners.click || !btnSolveResetView.listeners.click.length) throw new Error('solve Reset View not wired');
-  if (!btnSolvePanels || !btnSolvePanels.listeners.click || !btnSolvePanels.listeners.click.length) throw new Error('solve Hide Panels not wired');
-  btnSolveResetView.listeners.click[0]();          // resetView — must not throw
-  btnSolvePanels.listeners.click[0]();             // hide the floating panels
-  if (!stageEl.classList.contains('ui-off')) throw new Error('solve Hide Panels did not hide the panels');
-  if (btnSolvePanels.textContent !== 'Show Panels') throw new Error('solve Hide Panels label wrong: ' + btnSolvePanels.textContent);
-  btnSolvePanels.listeners.click[0]();             // restore them
-  if (stageEl.classList.contains('ui-off')) throw new Error('solve panels did not restore');
-  if (btnSolvePanels.textContent !== 'Hide Panels') throw new Error('solve panels label wrong after restore');
-  console.log('OK: solve top bar keeps Reset View & Hide Panels');
-
-  btnSolver.listeners.click[0]();                  // exit back to the mesh phase
-  if (stageEl.classList.contains('solve')) throw new Error('stage still in solve phase after exit');
-  if (btnSolver.textContent !== 'Solver Start') throw new Error('solver button text wrong after exit: ' + btnSolver.textContent);
-  console.log('OK: solver phase entered & exited via Solver Start button');
-
-  /* ---------- Exercise: solver shell UI (dropdowns + legend) ---------- */
-
+  // Problem dropdown default = elastic (first available); BC section + solve
+  // shell adapt to the ACTIVE block. In the model stage the problem dropdown
+  // lives in the model panel.
   const selProblem = elements.get('solverProblemSel');
-  const selField = elements.get('solverFieldSel');
   if (selProblem.children.length !== 3) throw new Error('problem dropdown should list 3 blocks, got ' + selProblem.children.length);
-  if (selProblem.children[0].value !== 'elastic' || selProblem.children[0].disabled !== false) throw new Error('elastic should be selectable & FIRST');
-  if (selProblem.children[0].textContent !== '2D Elasticity') throw new Error('elastic label wrong: ' + selProblem.children[0].textContent);
-  if (selProblem.children[1].value !== 'poisson' || selProblem.children[1].disabled !== false) throw new Error('poisson should be selectable & second');
-  if (selProblem.children[1].textContent !== '2D Poisson Equation') throw new Error('poisson label wrong: ' + selProblem.children[1].textContent);
-  if (selProblem.children[2].disabled !== true) throw new Error('dynamics should be disabled (coming soon)');
   if (selProblem.value !== 'elastic') throw new Error('default problem should be elastic, got ' + selProblem.value);
-  if (selField.children.length !== 3) throw new Error('elastic should expose 3 fields by default, got ' + selField.children.length);
-  if (elements.get('solverLegendCaption').textContent !== 'Displacement [mm]') throw new Error('default legend caption wrong: ' + elements.get('solverLegendCaption').textContent);
-  if (elements.get('solverLegendMin').textContent !== '—' || elements.get('solverLegendMax').textContent !== '—') throw new Error('legend range should be empty before solving');
-  if (elements.get('btnSolve').classList.contains('solver-blocked')) throw new Error('Solve must not be shell-blocked for elasticity');
+  if (selProblem.children[0].value !== 'elastic' || selProblem.children[0].disabled !== false) throw new Error('elastic should be selectable & FIRST');
+  if (selProblem.children[2].disabled !== true) throw new Error('dynamics should be disabled (coming soon)');
+  console.log('OK: model stage — problem dropdown defaults to Elasticity');
 
-  // switch to poisson → field list, caption and Solve gating change
-  selProblem.value = 'poisson';
-  selProblem.listeners.change[0]();
-  if (selField.children.length !== 2) throw new Error('poisson should expose 2 fields, got ' + selField.children.length);
-  if (elements.get('solverLegendCaption').textContent !== 'Temperature [°C]') throw new Error('legend caption wrong: ' + elements.get('solverLegendCaption').textContent);
-  if (!elements.get('btnSolve').classList.contains('solver-blocked')) throw new Error('Solve button should be blocked (faded) until a Temperature BC exists');
-
-  // switch display field → legend caption changes
-  selField.value = 'flux';
-  selField.listeners.change[0]();
-  if (elements.get('solverLegendCaption').textContent !== 'Heat Flux [W/m²]') throw new Error('legend caption wrong after field switch: ' + elements.get('solverLegendCaption').textContent);
-
-  // switch problem → field list + legend update
-  selProblem.value = 'elastic';
-  selProblem.listeners.change[0]();
-  if (selField.children.length !== 3) throw new Error('elastic should expose 3 fields, got ' + selField.children.length);
-  if (elements.get('solverLegendCaption').textContent !== 'Displacement [mm]') throw new Error('legend caption wrong after problem switch: ' + elements.get('solverLegendCaption').textContent);
-
-  // dynamics → 4 fields (displacement / velocity / acceleration / stress)
-  selProblem.value = 'dynamics';
-  selProblem.listeners.change[0]();
-  if (selField.children.length !== 4) throw new Error('dynamics should expose 4 fields, got ' + selField.children.length);
-  if (elements.get('solverLegendCaption').textContent !== 'Displacement [mm]') throw new Error('legend caption wrong after dynamics switch: ' + elements.get('solverLegendCaption').textContent);
-
-  // back to poisson
-  selProblem.value = 'poisson';
-  selProblem.listeners.change[0]();
-  if (elements.get('solverLegendCaption').textContent !== 'Temperature [°C]') throw new Error('legend caption wrong after switching back: ' + elements.get('solverLegendCaption').textContent);
-  console.log('OK: solver shell dropdowns (elastic first, default) + heatmap legend follow problem & field');
-
-  /* ---------- Exercise: solver parameters (k, f) ---------- */
-
-  const paramsWrap = elements.get('solverParams');
-  if (paramsWrap.children.length !== 3) throw new Error('poisson should render 2 params + f note, got ' + paramsWrap.children.length);
-  const kInput = paramsWrap.children[0].children[1];
-  const fInput = paramsWrap.children[1].children[1];
-  if (kInput.value !== '10' || fInput.value !== '10') throw new Error('param defaults wrong: k=' + kInput.value + ' f=' + fInput.value);
-  if (!/Uniform over the whole domain/.test(paramsWrap.children[2].textContent)) throw new Error('f note missing: ' + paramsWrap.children[2].textContent);
-  fInput.value = '5';
-  fInput.listeners.input[0]();
-  const paramsNow = global.MeshStudio.SolverUI.currentParams();
-  if (paramsNow.f !== 5 || paramsNow.k !== 10) throw new Error('param values wrong: ' + JSON.stringify(paramsNow));
-  // switching problem resets params to the new block's defaults
-  selProblem.value = 'elastic';
-  selProblem.listeners.change[0]();
-  if (paramsWrap.children.length !== 4) throw new Error('elastic should render E, nu, Show-deformation switch, slider → 4 children, got ' + paramsWrap.children.length);
-  if (paramsWrap.children[0].children[1].value !== '200') throw new Error('E default wrong (should be 200 GPa): ' + paramsWrap.children[0].children[1].value);
-  if (paramsWrap.children[1].children[1].value !== '0.3') throw new Error('nu default wrong: ' + paramsWrap.children[1].children[1].value);
-  const deformSwitchCb0 = paramsWrap.children[2].children[1].children[0];
-  if (deformSwitchCb0.type !== 'checkbox') throw new Error('Show deformation should be a switch (checkbox), got type ' + deformSwitchCb0.type);
-  if (deformSwitchCb0.checked !== false) throw new Error('Show deformation should default to OFF');
-  const deformRange = paramsWrap.children[3].children[1];
-  if (deformRange.type !== 'range') throw new Error('Deformation should be a slider input, got type ' + deformRange.type);
-  if (deformRange.value !== '1') throw new Error('Deformation slider default wrong (should be 10^1 = ×10): ' + deformRange.value);
-  const cp0 = global.MeshStudio.SolverUI.currentParams();
-  if (cp0.deformOn !== false || cp0.deform !== 10) throw new Error('elastic param defaults wrong: ' + JSON.stringify(cp0));
-  if (deformRange.disabled !== true) throw new Error('Deformation slider should be disabled until Show deformation is ON');
-
-  // enabling the switch unlocks the slider (and the deformed view)
-  deformSwitchCb0.checked = true;
-  deformSwitchCb0.listeners.change[0]();
-  if (deformRange.disabled !== false) throw new Error('Deformation slider should enable with the switch');
-  if (global.MeshStudio.SolverUI.currentParams().deformOn !== true) throw new Error('deformOn should be true after the switch');
-  deformSwitchCb0.checked = false;
-  deformSwitchCb0.listeners.change[0]();
-  if (deformRange.disabled !== true) throw new Error('Deformation slider should disable again after switch off');
-  selProblem.value = 'poisson';
-  selProblem.listeners.change[0]();
-  if (paramsWrap.children.length !== 3) throw new Error('poisson params not restored, got ' + paramsWrap.children.length);
-  if (paramsWrap.children[1].children[1].value !== '10') throw new Error('param f should reset to default after problem switch');
-  console.log('OK: solver parameters (k, f) with defaults, problem-scoped');
-
-  /* ---------- Exercise: solver boundary conditions (Poisson) ---------- */
-
-  btnSolver.listeners.click[0]();                  // enter the solve phase
-  if (!stageEl.classList.contains('solve')) throw new Error('stage did not enter solve phase (BC test)');
-  if (!/boundary/i.test(elements.get('hintText').textContent)) throw new Error('solve hint should mention boundary edges: ' + elements.get('hintText').textContent);
+  /* ---------- Exercise: unified BC controller (elastic: mechanical BCs) ---------- */
 
   const bcButtons = elements.get('solverBcButtons');
-  if (bcButtons.children.length !== 2) throw new Error('poisson should expose 2 BC buttons, got ' + bcButtons.children.length);
+  if (bcButtons.children.length !== 3) throw new Error('elastic should expose 3 BC buttons (point/pressure/support), got ' + bcButtons.children.length);
+  if (!/Point Load/.test(bcButtons.children[0].textContent)) throw new Error('BC btn 0 wrong: ' + bcButtons.children[0].textContent);
+  if (!/Pressure/.test(bcButtons.children[1].textContent)) throw new Error('BC btn 1 wrong: ' + bcButtons.children[1].textContent);
+  if (!/Support/.test(bcButtons.children[2].textContent)) throw new Error('BC btn 2 wrong: ' + bcButtons.children[2].textContent);
+  console.log('OK: elastic BC buttons (point / pressure / support) rendered from metadata');
 
-  // clicking the blocked Solve button must explain WHY it does nothing
-  elements.get('btnSolve').listeners.click[0]();
-  const blockedToast = elements.get('toast').textContent;
-  if (blockedToast !== 'At least one Dirichlet boundary condition is required.') throw new Error('blocked solve toast wrong: ' + blockedToast);
+  // Solve dot is clickable but gated on ≥2 support nodes → click yields a toast, stays in model
+  stageBtn('solve').listeners.click[0]();
+  if (stageEl.classList.contains('solve')) throw new Error('should not enter solve without 2 support nodes');
+  if (!/support/i.test(elements.get('toast').textContent)) throw new Error('gating toast missing: ' + elements.get('toast').textContent);
+  console.log('OK: solve entry gated until ≥2 support nodes exist');
 
-  // Temperature (Dirichlet) via box selection over the whole domain
-  bcButtons.children[0].listeners.click[0]();
+  // point load via click selection
+  bcButtons.children[0].listeners.click[0]();     // Add Point Load
+  canvasEl.listeners.pointermove[0]({ clientX: 400, clientY: 320, pointerId: 1 });
+  canvasEl.listeners.pointerdown[0]({ clientX: 400, clientY: 320, pointerId: 1 });
+  canvasEl.listeners.pointerup[0]({});
+  global._listeners.keydown[0](key('Enter'));     // confirm selection → unified modal
+  const bcModal = elements.get('bcModal');
+  if (!bcModal.classList.contains('visible')) throw new Error('BC modal did not open for a point load');
+  if (elements.get('bcTitle').textContent !== 'Point Load') throw new Error('BC modal title wrong: ' + elements.get('bcTitle').textContent);
+  if (elements.get('bcName').value !== 'Point_load_1') throw new Error('default name wrong: ' + elements.get('bcName').value);
+  console.log('OK: point-load selection + unified modal open (default name ' + elements.get('bcName').value + ')');
+
+  // vector input (fx/fy) lives in #bcFields
+  elements.get('bcName').value = 'MyLoad';
+  const fx = bcField('fx'); fx.value = '1000';
+  const fy = bcField('fy'); fy.value = '-250';
+  clickById('btnBcOk');
+  if (bcModal.classList.contains('visible')) throw new Error('BC modal did not close');
+  const bcListText = textOf(elements.get('solverBcList'));
+  if (!/MyLoad/.test(bcListText)) throw new Error('point load not listed: ' + bcListText);
+  if (ms.App.state.pointLoads.length !== 1) throw new Error('point load not in state');
+  console.log('OK: point load confirmed & listed (' + bcListText.split('—').join(' - ').trim() + ')');
+
+  // support via box selection → type input (Fixed/Hinge)
+  bcButtons.children[2].listeners.click[0]();     // Add Support
+  canvasEl.listeners.pointermove[0]({ clientX: 400, clientY: 300, pointerId: 2 });
+  canvasEl.listeners.pointerdown[0]({ clientX: 400, clientY: 300, pointerId: 2 });
+  canvasEl.listeners.pointermove[0]({ clientX: 640, clientY: 460, pointerId: 2 }); // big box → many nodes
+  canvasEl.listeners.pointerup[0]({});
+  global._listeners.keydown[0](key('Enter'));
+  if (!bcModal.classList.contains('visible')) throw new Error('support modal did not open');
+  const typeSeg = elements.get('bcFields');
+  const segBtns = [];
+  (function collect(n) {
+    for (const c of n.children || []) { if (c.classList && c.classList.contains('seg')) segBtns.push(c); collect(c); }
+  })(typeSeg);
+  const hingeBtn = segBtns.find(b => b.dataset.type === 'hinge');
+  if (!hingeBtn) throw new Error('hinge option missing in support modal');
+  hingeBtn.listeners.click[0]();                   // choose Hinge
+  elements.get('bcName').value = 'Support_1';
+  clickById('btnBcOk');
+  const supportText = textOf(elements.get('solverBcList'));
+  if (!/Support_1/.test(supportText)) throw new Error('support not listed: ' + supportText);
+  const supNodes = ms.App.state.supports[0].nodeIds.length;
+  if (supNodes < 2) throw new Error('box should select ≥2 support nodes, got ' + supNodes);
+  if (ms.App.state.supports[0].type !== 'hinge') throw new Error('support type wrong');
+  console.log('OK: support (hinge) added via box selection — ' + supNodes + ' nodes');
+
+  // Pressure (boundary-edge, scalar like Poisson) + Escape cancels a live session
+  bcButtons.children[1].listeners.click[0]();     // Add Pressure
+  canvasEl.listeners.pointermove[0]({ clientX: 100, clientY: 100, pointerId: 9 });
+  canvasEl.listeners.pointerdown[0]({ clientX: 100, clientY: 100, pointerId: 9 });
+  canvasEl.listeners.pointermove[0]({ clientX: 700, clientY: 500, pointerId: 9 });
+  canvasEl.listeners.pointerup[0]({});
+  global._listeners.keydown[0](key('Escape'));
+  if (ms.SolverBC.selecting() !== false) throw new Error('Escape should cancel the live BC selection');
+  console.log('OK: Escape cancels a live pressure selection');
+
+  // re-add the pressure: box select (filtered to boundary edges) → scalar p
+  bcButtons.children[1].listeners.click[0]();     // Add Pressure
+  canvasEl.listeners.pointermove[0]({ clientX: 100, clientY: 100, pointerId: 10 });
+  canvasEl.listeners.pointerdown[0]({ clientX: 100, clientY: 100, pointerId: 10 });
+  canvasEl.listeners.pointermove[0]({ clientX: 700, clientY: 500, pointerId: 10 });
+  canvasEl.listeners.pointerup[0]({});
+  global._listeners.keydown[0](key('Enter'));
+  if (!bcModal.classList.contains('visible')) throw new Error('pressure modal did not open');
+  if (elements.get('bcTitle').textContent !== 'Pressure') throw new Error('pressure modal title wrong: ' + elements.get('bcTitle').textContent);
+  elements.get('bcName').value = 'Pressure_1';
+  bcField('value').value = '2';
+  clickById('btnBcOk');
+  if (bcModal.classList.contains('visible')) throw new Error('pressure modal did not close');
+  const pressureText = textOf(elements.get('solverBcList'));
+  if (!/Pressure_1/.test(pressureText)) throw new Error('pressure not listed: ' + pressureText);
+  if (ms.App.state.pressures.length !== 1) throw new Error('pressure not in state');
+  // every pressure edge must be a boundary edge (interior edges NOT selectable)
+  const pBndKeys = new Set(ms.Mesh.boundaryEdges(ms.App.state.mesh).map(([a, b]) => (a < b ? a + '_' + b : b + '_' + a)));
+  for (const g of ms.App.state.pressures) for (const [a, b] of g.edges) {
+    const kk = a < b ? a + '_' + b : b + '_' + a;
+    if (!pBndKeys.has(kk)) throw new Error('non-boundary edge under pressure: ' + kk);
+  }
+  console.log('OK: uniform pressure on boundary edges only (scalar p)');
+
+  // delete the point load group via the list ✕ (kept: list deletion path)
+  const firstRowDel = elements.get('solverBcList').children[0].children[1];
+  firstRowDel.listeners.click[0]();
+  if (ms.App.state.pointLoads.length !== 0) throw new Error('point load delete failed');
+  if (!/Pressure_1/.test(textOf(elements.get('solverBcList')))) throw new Error('pressure should survive the delete');
+  console.log('OK: group deletion works per row');
+
+  /* ---------- Exercise: enter solve (elasticity) & run it ---------- */
+
+  stageBtn('solve').listeners.click[0]();
+  if (!stageEl.classList.contains('solve')) throw new Error('stage did not enter solve after 2 supports');
+  if (elements.get('btnDemo').disabled !== true) throw new Error('Demo should be disabled in solve');
+  console.log('OK: solve stage entered (elasticity)');
+
+  // elastic params (E, ν, deform switch + slider) render in the solve panel
+  const paramsWrap = elements.get('solverParams');
+  if (paramsWrap.children.length !== 4) throw new Error('elastic should render E, nu, switch, slider → 4 children, got ' + paramsWrap.children.length);
+  if (paramsWrap.children[0].children[1].value !== '200') throw new Error('E default wrong (should be 200 GPa): ' + paramsWrap.children[0].children[1].value);
+  if (paramsWrap.children[1].children[1].value !== '0.3') throw new Error('nu default wrong: ' + paramsWrap.children[1].children[1].value);
+  console.log('OK: elastic parameters render in the solve stage');
+
+  // Solve (block dispatch through the unified controller)
+  clickById('btnSolve');
+  const esol = ms.App.state.solution;
+  if (!esol || !esol.fields || !esol.fields.displacement) throw new Error('no elastic solution after Solve');
+  if (!/Solved/.test(elements.get('toast').textContent)) throw new Error('elastic solve toast missing: ' + elements.get('toast').textContent);
+  const nNodes = ms.App.state.mesh.nodes.length;
+  for (const fid of ['displacement', 'strain', 'stress']) {
+    const f = esol.fields[fid];
+    if (!f || f.data.length !== nNodes || !(f.min <= f.max)) throw new Error('bad elastic field ' + fid);
+  }
+  console.log('OK: elasticity solves from model-stage BCs (max |u| ' + esol.fields.displacement.max.toExponential(1) + ')');
+
+  // display-field switch re-renders legend (elastic nodal fields)
+  const selField = elements.get('solverFieldSel');
+  selField.value = 'stress';
+  selField.listeners.change[0]();
+  if (elements.get('solverLegendCaption').textContent !== 'Stress [MPa]') {
+    throw new Error('stress caption wrong: ' + elements.get('solverLegendCaption').textContent);
+  }
+  console.log('OK: elastic display fields follow the field dropdown');
+
+  // deformed view switch + log slider
+  const deformSwitchCb = paramsWrap.children[2].children[1].children[0];
+  const deformInput = paramsWrap.children[3].children[1];
+  deformSwitchCb.checked = true;
+  deformSwitchCb.listeners.change[0]();
+  if (deformInput.disabled !== false) throw new Error('deformation slider should enable with the switch');
+  if (ms.App.state.hideMeshFn() !== true) throw new Error('mesh should be hidden in deformed mode');
+  const rafBefore = global._rafCount || 0;
+  deformInput.value = '3';                        // 10^3 = ×1000
+  deformInput.listeners.input[0]();
+  if ((global._rafCount || 0) <= rafBefore) throw new Error('deformation slider did not re-render');
+  if (ms.SolverUI.currentParams().deform !== 1000) throw new Error('deformation slider should map 10^3 → ×1000');
+  deformSwitchCb.checked = false;
+  deformSwitchCb.listeners.change[0]();
+  console.log('OK: deformed view + log deformation slider work');
+
+  /* ---------- Back to model: switch to Poisson (scalar BCs) ---------- */
+
+  stageBtn('model').listeners.click[0]();
+  if (!stageEl.classList.contains('model')) throw new Error('did not return to the model stage');
+  selProblem.value = 'poisson';
+  selProblem.listeners.change[0]();
+  if (bcButtons.children.length !== 2) throw new Error('poisson should expose 2 BC buttons (dirichlet/neumann), got ' + bcButtons.children.length);
+  if (!/Temperature/.test(bcButtons.children[0].textContent)) throw new Error('poisson BC btn 0 wrong: ' + bcButtons.children[0].textContent);
+  if (!/Heat Flux/.test(bcButtons.children[1].textContent)) throw new Error('poisson BC btn 1 wrong: ' + bcButtons.children[1].textContent);
+  if (ms.App.state.supports.length !== 0) throw new Error('switching problem must clear mechanical BCs');
+  console.log('OK: problem switch → Poisson BC buttons (scalar), mechanical BCs cleared');
+
+  // Poisson: Dirichlet Temperature on boundary edges (box selection)
+  stageBtn('solve').listeners.click[0]();
+  if (stageEl.classList.contains('solve')) throw new Error('should not enter solve for Poisson without a Dirichlet BC');
+  if (!/Temperature|Dirichlet/i.test(elements.get('toast').textContent)) throw new Error('poisson gating toast wrong: ' + elements.get('toast').textContent);
+  console.log('OK: Poisson solve gated until a Dirichlet group exists');
+
+  bcButtons.children[0].listeners.click[0]();     // Add Temperature
   canvasEl.listeners.pointermove[0]({ clientX: 100, clientY: 100, pointerId: 11 });
   canvasEl.listeners.pointerdown[0]({ clientX: 100, clientY: 100, pointerId: 11 });
   canvasEl.listeners.pointermove[0]({ clientX: 700, clientY: 500, pointerId: 11 });
   canvasEl.listeners.pointerup[0]({});
   global._listeners.keydown[0](key('Enter'));
-  if (!elements.get('solverCondModal').classList.contains('visible')) throw new Error('solver BC modal did not open');
-  elements.get('solverCondName').value = 'HotEdge';
-  elements.get('solverCondValue').value = '100';
-  elements.get('btnSolverCondOk').listeners.click[0]();
-  if (elements.get('solverCondModal').classList.contains('visible')) throw new Error('solver BC modal did not close');
-  if (!/HotEdge/.test(textOf(elements.get('solverBcList')))) throw new Error('temperature group not listed: ' + textOf(elements.get('solverBcList')));
-  if (elements.get('btnSolve').classList.contains('solver-blocked')) throw new Error('Solve should be enabled once a Temperature BC exists');
+  if (!bcModal.classList.contains('visible')) throw new Error('temperature modal did not open');
+  elements.get('bcName').value = 'HotEdge';
+  const valField = bcField('value'); valField.value = '100';
+  clickById('btnBcOk');
+  if (!/HotEdge/.test(textOf(elements.get('solverBcList')))) throw new Error('temperature group not listed');
+  if (ms.SolverBC.groups.length !== 1) throw new Error('expected 1 scalar BC group, got ' + ms.SolverBC.groups.length);
 
   // every selected edge must be a boundary edge (interior edges are NOT selectable)
-  const ms = global.MeshStudio;
   const bndKeys = new Set(ms.Mesh.boundaryEdges(ms.App.state.mesh).map(([a, b]) => (a < b ? a + '_' + b : b + '_' + a)));
-  const bcGroups = ms.SolverBC.groups;
-  if (bcGroups.length !== 1) throw new Error('expected 1 BC group, got ' + bcGroups.length);
-  for (const g of bcGroups) for (const [a, b] of g.edges) {
+  for (const g of ms.SolverBC.groups) for (const [a, b] of g.edges) {
     const kk = a < b ? a + '_' + b : b + '_' + a;
     if (!bndKeys.has(kk)) throw new Error('non-boundary edge selected: ' + kk);
   }
   console.log('OK: temperature (Dirichlet) group on boundary edges only, Solve enabled');
 
-  /* ---------- Exercise: run the real Poisson solve ---------- */
-
-  // The constant-Dirichlet check below requires f = 0 (with the new default
-  // f = 10 the interior would heat up above 100); set it explicitly.
-  const fSolveInput = paramsWrap.children[1].children[1];
-  fSolveInput.value = '0';
-  fSolveInput.listeners.input[0]();
-  elements.get('btnSolve').listeners.click[0]();
-  const sol = ms.App.state.solution;
-  if (!sol || !sol.fields || !sol.fields.temperature) throw new Error('no solution after Solve');
-  const tField = sol.fields.temperature;
-  if (!(Math.abs(tField.min - 100) < 1e-6 && Math.abs(tField.max - 100) < 1e-6)) {
-    throw new Error('constant-Dirichlet solution wrong: ' + tField.min + '..' + tField.max);
-  }
-  if (sol.fields.flux.max > 1e-6) throw new Error('flux should vanish for a constant solution, got ' + sol.fields.flux.max);
-  if (!/Solved/.test(elements.get('toast').textContent)) throw new Error('solve toast missing: ' + elements.get('toast').textContent);
-  if (elements.get('solverLegendMin').textContent === '—') throw new Error('legend min not updated after solve');
-  console.log('OK: real Poisson solve runs (constant Dirichlet reproduced, u=' + tField.min + ')');
-
-  // switching the display field must re-render the heatmap (and the legend):
-  // for the constant solution the flux range is 0..0 while T is 100..100
-  const rafBefore = global._rafCount || 0;
-  selField.value = 'flux';
-  selField.listeners.change[0]();
-  if ((global._rafCount || 0) <= rafBefore) throw new Error('field switch did not schedule a re-render (stale heatmap)');
-  if (elements.get('solverLegendCaption').textContent !== 'Heat Flux [W/m²]') throw new Error('legend caption not flux after switch: ' + elements.get('solverLegendCaption').textContent);
-  if (elements.get('solverLegendMin').textContent !== '0' || elements.get('solverLegendMax').textContent !== '0') {
-    throw new Error('legend should show flux range 0..0 for the constant solution, got ' +
-      elements.get('solverLegendMin').textContent + '..' + elements.get('solverLegendMax').textContent);
-  }
-  console.log('OK: display-field switch re-renders the heatmap (flux legend 0..0)');
-
-  // Heat Flux (Neumann) group
+  // Heat Flux (Neumann) group + list delete
   bcButtons.children[1].listeners.click[0]();
   canvasEl.listeners.pointermove[0]({ clientX: 100, clientY: 100, pointerId: 12 });
   canvasEl.listeners.pointerdown[0]({ clientX: 100, clientY: 100, pointerId: 12 });
   canvasEl.listeners.pointermove[0]({ clientX: 700, clientY: 500, pointerId: 12 });
   canvasEl.listeners.pointerup[0]({});
   global._listeners.keydown[0](key('Enter'));
-  if (!elements.get('solverCondModal').classList.contains('visible')) throw new Error('flux modal did not open');
-  elements.get('solverCondName').value = 'Flux1';
-  elements.get('solverCondValue').value = '50';
-  elements.get('btnSolverCondOk').listeners.click[0]();
-  if (!/Flux1/.test(textOf(elements.get('solverBcList')))) throw new Error('flux group not listed');
+  if (!bcModal.classList.contains('visible')) throw new Error('flux modal did not open');
+  elements.get('bcName').value = 'Flux1';
+  bcField('value').value = '50';
+  clickById('btnBcOk');
   if (ms.SolverBC.groups.length !== 2) throw new Error('expected 2 BC groups, got ' + ms.SolverBC.groups.length);
-  for (const g of ms.SolverBC.groups) for (const [a, b] of g.edges) {
-    const kk = a < b ? a + '_' + b : b + '_' + a;
-    if (!bndKeys.has(kk)) throw new Error('non-boundary edge selected in flux group: ' + kk);
-  }
-  console.log('OK: heat flux (Neumann) group added (boundary-only)');
-
-  // Esc cancels a live selection; a delete removes a group; exit the phase
-  bcButtons.children[0].listeners.click[0]();
-  global._listeners.keydown[0](key('Escape'));
-  const delBtn = elements.get('solverBcList').children[0].children[1];
-  delBtn.listeners.click[0]();
+  const fluxRowDel = elements.get('solverBcList').children[1].children[1]; // second row = Flux1
+  fluxRowDel.listeners.click[0]();
   if (ms.SolverBC.groups.length !== 1) throw new Error('group delete failed, got ' + ms.SolverBC.groups.length);
-  btnSolver.listeners.click[0]();                  // back to mesh phase
-  if (stageEl.classList.contains('solve')) throw new Error('stage still in solve phase (BC test)');
-  console.log('OK: solver BC selection, grouping, delete, gating & boundary-only restriction');
+  console.log('OK: heat flux (Neumann) group added then deleted from the list');
 
-  /* ---------- Exercise: 2D Elasticity end-to-end (preprocessor BCs) ---------- */
-  // Earlier steps left MyLoad (1000, -250) — on a node INSIDE the Support_1
-  // box, i.e. pinned, so it would not deform the body. Add a second point
-  // load at a free lattice node (480, 360) to get a nonzero displacement.
+  /* ---------- Exercise: real Poisson solve (stage 3) ---------- */
 
-  btnPhase.listeners.click[0]();                   // enter the BC phase
-  elements.get('btnAddPointLoad').listeners.click[0]();
-  canvasEl.listeners.pointermove[0]({ clientX: 480, clientY: 360, pointerId: 21 });
-  canvasEl.listeners.pointerdown[0]({ clientX: 480, clientY: 360, pointerId: 21 });
-  canvasEl.listeners.pointerup[0]({});
-  global._listeners.keydown[0](key('Enter'));
-  if (!condModal.classList.contains('visible')) throw new Error('elastic load modal did not open');
-  condName.value = 'ElasticLoad';
-  elements.get('condFx').value = '0';
-  elements.get('condFy').value = '-500';           // FEM convention: down in screen space
-  elements.get('btnCondOk').listeners.click[0]();
-  if (!/ElasticLoad/.test(textOf(elements.get('bcList')))) throw new Error('elastic load not listed');
+  stageBtn('solve').listeners.click[0]();
+  if (!stageEl.classList.contains('solve')) throw new Error('did not enter solve for Poisson');
 
-  btnSolver.listeners.click[0]();                  // enter the solve phase
-  if (!stageEl.classList.contains('solve')) throw new Error('stage did not enter solve phase (elastic test)');
-
-  selProblem.value = 'elastic';
-  selProblem.listeners.change[0]();
-  if (selField.children.length !== 3) throw new Error('elastic should expose 3 fields, got ' + selField.children.length);
-
-  // elasticity has no scalar solver-BCs — the whole BC section is hidden
-  // (no stray "coming soon"/empty-list texts for non-BC problems)
-  if (elements.get('solverBcSection').style.display !== 'none') throw new Error('BC section should be hidden for elasticity');
-  if (elements.get('solverBcButtons').children.length !== 0) throw new Error('elastic should add no scalar BC buttons');
-  if (elements.get('btnSolve').classList.contains('solver-blocked')) throw new Error('Solve must not be shell-blocked for elasticity');
-
-  // Solve must run: the 4-node support removes rigid-body motion
-  elements.get('btnSolve').listeners.click[0]();
-  const esol = ms.App.state.solution;
-  if (!esol || !esol.fields || !esol.fields.displacement) throw new Error('no elasticity solution after Solve');
-  const nNodes = ms.App.state.mesh.nodes.length;
-  for (const fid of ['displacement', 'strain', 'stress']) {
-    const f = esol.fields[fid];
-    if (!f || f.data.length !== nNodes || !(f.min <= f.max) || !Number.isFinite(f.min) || !Number.isFinite(f.max)) {
-      throw new Error('bad elastic field ' + fid);
-    }
+  // The constant-Dirichlet check requires f = 0 (with the new default
+  // f = 10 the interior would heat up above 100); set it explicitly.
+  const fInput = paramsWrap.children[1].children[1];
+  fInput.value = '0';
+  fInput.listeners.input[0]();
+  clickById('btnSolve');
+  const sol = ms.App.state.solution;
+  if (!sol || !sol.fields || !sol.fields.temperature) throw new Error('no Poisson solution after Solve');
+  const tField = sol.fields.temperature;
+  if (!(Math.abs(tField.min - 100) < 1e-6 && Math.abs(tField.max - 100) < 1e-6)) {
+    throw new Error('constant-Dirichlet solution wrong: ' + tField.min + '..' + tField.max);
   }
-  if (!(esol.fields.displacement.max > 0)) throw new Error('free-node load should displace the body (max ' + esol.fields.displacement.max + ')');
-  const eu = esol.fields.displacement.data;
-  // every support node must stay put
-  const supIds = new Set();
-  for (const g of ms.App.state.supports) for (const id of g.nodeIds) supIds.add(id);
-  if (supIds.size < 2) throw new Error('expected ≥2 support nodes for the elastic gate, got ' + supIds.size);
-  for (const id of supIds) {
-    if (!(Math.abs(eu[id]) < 1e-8)) throw new Error('support node ' + id + ' moved by ' + eu[id]);
-  }
-  if (elements.get('solverLegendMin').textContent === '—') throw new Error('legend range not updated after elastic solve');
-  if (!/Solved/.test(elements.get('toast').textContent)) throw new Error('elastic solve toast missing: ' + elements.get('toast').textContent);
-  console.log('OK: elasticity solves from pre-processor loads/supports (max |u| ' + esol.fields.displacement.max.toExponential(1) + ')');
+  if (sol.fields.flux.max > 1e-6) throw new Error('flux should vanish for a constant solution, got ' + sol.fields.flux.max);
+  if (!/Solved/.test(elements.get('toast').textContent)) throw new Error('poisson solve toast missing: ' + elements.get('toast').textContent);
+  if (elements.get('solverLegendMin').textContent === '—') throw new Error('legend min not updated after solve');
+  console.log('OK: real Poisson solve runs (constant Dirichlet reproduced, u=' + tField.min + ')');
 
-  // display-field switch re-renders for elastic nodal fields
-  selField.value = 'stress';
+  // switching the display field re-renders heatmap (flux legend 0..0)
+  const rafSwitch = global._rafCount || 0;
+  selField.value = 'flux';
   selField.listeners.change[0]();
-  if (elements.get('solverLegendCaption').textContent !== 'Stress [MPa]') {
-    throw new Error('stress caption wrong: ' + elements.get('solverLegendCaption').textContent);
+  if ((global._rafCount || 0) <= rafSwitch) throw new Error('field switch did not re-render (stale heatmap)');
+  if (elements.get('solverLegendCaption').textContent !== 'Heat Flux [W/m²]') throw new Error('legend caption not flux: ' + elements.get('solverLegendCaption').textContent);
+  if (elements.get('solverLegendMin').textContent !== '0' || elements.get('solverLegendMax').textContent !== '0') {
+    throw new Error('legend should show flux range 0..0, got ' +
+      elements.get('solverLegendMin').textContent + '..' + elements.get('solverLegendMax').textContent);
   }
-  console.log('OK: elasticity display fields follow the field dropdown');
+  console.log('OK: display-field switch re-renders heatmap (flux legend 0..0)');
 
-  // deformed view is OFF by default → the heatmap stays on the UNDEFORMED
-  // mesh and the renderer keeps drawing the domain (predicate = false)
-  if (typeof ms.App.state.hideMeshFn !== 'function') throw new Error('elastic solve should install a hideMesh predicate');
-  if (ms.App.state.hideMeshFn() !== false) throw new Error('mesh must stay visible while the deformed view is off');
+  // solve-phase top-bar keeps Reset View + Hide Panels usable
+  const btnPanels = elements.get('btnPanels');
+  btnPanels.listeners.click[0]();                  // hide
+  if (!stageEl.classList.contains('ui-off')) throw new Error('Hide Panels did not hide');
+  btnPanels.listeners.click[0]();                  // restore
+  if (stageEl.classList.contains('ui-off')) throw new Error('panels did not restore');
+  clickById('btnResetView');
+  console.log('OK: solve stage keeps Reset View & Hide Panels');
 
-  const deformSwitchCb = paramsWrap.children[2].children[1].children[0];
-  const deformInput = paramsWrap.children[3].children[1];
-  if (deformInput.disabled !== true) throw new Error('Deformation slider should start disabled (deformed view off)');
-
-  // enable the deformed view: the heatmap follows the deformed mesh (the
-  // renderer's mesh drawing is suppressed per frame) and the slider unlocks
-  const rafToggleBefore = global._rafCount || 0;
-  deformSwitchCb.checked = true;
-  deformSwitchCb.listeners.change[0]();
-  if ((global._rafCount || 0) <= rafToggleBefore) throw new Error('Show deformation switch did not schedule a re-render');
-  if (deformInput.disabled !== false) throw new Error('Deformation slider should enable with the switch');
-  if (ms.App.state.hideMeshFn() !== true) throw new Error('mesh should be hidden in deformed mode');
-  console.log('OK: Show-deformation switch toggles the deformed heatmap');
-
-  // the logarithmic Deformation slider drives the scale → edits re-render
-  const rafSliderBefore = global._rafCount || 0;
-  deformInput.value = '3';                        // 10^3 = ×1000
-  deformInput.listeners.input[0]();
-  if ((global._rafCount || 0) <= rafSliderBefore) {
-    throw new Error('Deformation slider change did not schedule a re-render');
-  }
-  if (global.MeshStudio.SolverUI.currentParams().deform !== 1000) {
-    throw new Error('Deformation slider should map 10^3 → ×1000, got ' + global.MeshStudio.SolverUI.currentParams().deform);
-  }
-  console.log('OK: Deformation slider (log) re-renders the deformed heatmap');
-
-  selProblem.value = 'poisson';                    // leave the shell clean
+  // problem is LOCKED in solve: the problem dropdown lives in the MODEL
+  // panel only, so it is unreachable while stage.solve hides that panel.
+  // Switching problems therefore requires returning to the model stage.
+  stageBtn('model').listeners.click[0]();          // back to model (allowed)
+  if (!stageEl.classList.contains('model')) throw new Error('did not return to model');
+  selProblem.value = 'elastic';                    // cleanup: restore default problem
   selProblem.listeners.change[0]();
-  if (ms.App.state.hideMeshFn() !== false) throw new Error('predicate must clear when switching away from elasticity');
-  btnSolver.listeners.click[0]();                  // exit the solve phase
-  if (stageEl.classList.contains('solve')) throw new Error('stage still in solve phase (elastic test exit)');
-  if (ms.App.state.hideMeshFn !== null) throw new Error('hideMesh predicate must be removed on leaving the solve phase');
-  console.log('OK: elasticity block wired end-to-end');
+  console.log('OK: problem switching requires returning to the model stage');
 
   console.log('DOM smoke OK');
 })().catch(e => {

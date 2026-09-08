@@ -280,22 +280,22 @@ console.log('--- new-only checks ---');
     const fakeMesh = { nodes: [{x:10,y:20},{x:30,y:40},{x:50,y:60},{x:70,y:80},{x:90,y:100}], elements: [] };
     const conds = {
       pointLoads: [{ name: 'Point_load_1', nodeIds: [0, 2], fx: 100, fy: 0 }],
-      distLoads:  [{ name: 'Distributed_load_1', edges: [[0, 1], [2, 3]], fx: -50, fy: 86.6025 }],
+      pressures:  [{ name: 'Pressure_1', edges: [[0, 1], [2, 3]], p: 2.5 }],
       supports:   [{ name: 'Support_1', type: 'fixed', nodeIds: [4] }],
     };
     const lines = NEW.Export.buildTxt(fakeMesh, { height: 100, fit: 100 }, conds).split('\n');
     const pl = lines.indexOf('# POINT LOADS (NAME COUNT | NODE LINES | FX FY)');
-    const dl = lines.indexOf('# DISTRIBUTED LOADS (NAME COUNT | EDGE LINES N1 N2 | FX FY)');
+    const pr = lines.indexOf('# SURFACE PRESSURES (NAME COUNT | EDGE LINES | P)');
     const sp = lines.indexOf('# SUPPORTS (NAME TYPE COUNT | NODE LINES)');
-    assert(pl > 0 && dl > pl && sp > dl, 'export: condition sections in order');
+    assert(pl > 0 && pr > pl && sp > pr, 'export: condition sections in order');
     eq(lines[pl + 1], 'Point_load_1 2', 'export: point load header');
     eq(lines[pl + 2], '1', 'export: point load member 1 (1-based)');
     eq(lines[pl + 3], '3', 'export: point load member 2');
     eq(lines[pl + 4], '100 0', 'export: point load vector');
-    eq(lines[dl + 1], 'Distributed_load_1 2', 'export: dist load header');
-    eq(lines[dl + 2], '1 2', 'export: dist edge 1');
-    eq(lines[dl + 3], '3 4', 'export: dist edge 2');
-    eq(lines[dl + 4], '-50 86.6025', 'export: dist vector');
+    eq(lines[pr + 1], 'Pressure_1 2', 'export: pressure header');
+    eq(lines[pr + 2], '1 2', 'export: pressure edge 1');
+    eq(lines[pr + 3], '3 4', 'export: pressure edge 2');
+    eq(lines[pr + 4], '2.5', 'export: pressure value');
     eq(lines[sp + 1], 'Support_1 fixed 1', 'export: support header');
     eq(lines[sp + 2], '5', 'export: support member');
     // no conditions -> no condition sections
@@ -382,7 +382,7 @@ console.log('--- new-only checks ---');
     cells: NEW.Grid.generateCells('square', {minX:-80,minY:-80,maxX:880,maxY:680}, 40),
     viewCells: NEW.Grid.generateCells('square', {minX:-80,minY:-80,maxX:880,maxY:680}, 40),
     mesh, samples: [], polygon: null, drawing: [], cursor: {x: 10, y: 10},
-    pointLoads: [], distLoads: [], supports: [], bcSel: null,
+    pointLoads: [], pressures: [], supports: [], bcSel: null,
     view: { zoom: 1, ox: 0, oy: 0 },
   };
   renderer.render(fakeState);
@@ -392,7 +392,7 @@ console.log('--- new-only checks ---');
   renderer.render(fakeState);
   // exercise the boundary-condition markers + selection preview paths
   fakeState.pointLoads = [{ name: 'P', nodeIds: [0], fx: 10, fy: 0 }];
-  fakeState.distLoads = [{ name: 'D', edges: [[0, 1], [1, 2]], fx: -5, fy: 3 }];
+  fakeState.pressures = [{ name: 'Pr', edges: [[0, 1], [1, 2]], p: 2 }];
   fakeState.supports = [{ name: 'S', type: 'fixed', nodeIds: [1] }];
   fakeState.bcSel = {
     nodes: new Set([0]),

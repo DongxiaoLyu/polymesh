@@ -129,13 +129,14 @@
   }
 
   /* ============================================================
-     Boundary edges & selection helpers (for loads / supports)
+     Boundary edges & selection helpers (for BCs / pressures)
      ============================================================ */
 
   /**
    * Undirected boundary edges of a mesh — the edges used by exactly ONE
    * element (interior edges are shared by two). These are the mesh's
-   * outer boundary segments where distributed loads / supports apply.
+   * outer boundary segments where boundary-edge BCs (pressures, scalar
+   * Poisson BCs, supports…) apply.
    * Returns an array of [nodeIdA, nodeIdB] with a < b (0-based ids).
    */
   function boundaryEdges(mesh) {
@@ -182,9 +183,9 @@
 
   /**
    * ALL unique undirected edges of a mesh — boundary AND interior.
-   * Interior edges are shared by two elements; some analyses need
-   * distributed (line) loads on them too. Returns [nodeIdA, nodeIdB]
-   * pairs with a < b (0-based ids).
+   * Interior edges are shared by two elements; kept for edge-selection
+   * helpers and potential future interior line loads. Returns
+   * [nodeIdA, nodeIdB] pairs with a < b (0-based ids).
    */
   function allEdges(mesh) {
     const seen = new Map();

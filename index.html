@@ -72,6 +72,88 @@
 
   .topbar-actions { display: flex; gap: 8px; flex: 0 0 auto; }
 
+  /* ---------- Workflow stepper (O——O——O) ----------
+     Three stage dots over a connector line; the ACTIVE dot morphs into a
+     labelled pill. The pill width is animated precisely: app.js measures
+     each label's scrollWidth into the CSS var --w, and width (not
+     max-width) is transitioned, so neighbours glide instead of jumping.
+     The label is clipped by the button edge while it grows out of the dot
+     (classic "dot opens into a pill" look). Connector line is drawn at
+     the nav level so it never shakes with the buttons. */
+  .stage-nav {
+    position: relative;
+    display: flex; align-items: center; justify-content: center;
+    gap: 16px; margin: 0 12px; flex: 1 1 auto; min-width: 0;
+  }
+  .stage-nav::before {
+    content: ""; position: absolute; top: 50%;
+    left: 14px; right: 14px; height: 2px;
+    transform: translateY(-50%); border-radius: 2px;
+    background: var(--hairline);
+  }
+  .stage-btn {
+    position: relative; z-index: 1;   /* sits above the connector line */
+    display: flex; align-items: center;
+    height: 28px; border: none; border-radius: 999px; cursor: pointer;
+    padding: 0; background: transparent;
+    font-family: inherit; color: var(--text-2);
+    width: 28px;                         /* collapsed = dot only */
+    overflow: hidden;                    /* label clipped while growing out */
+    transition: width .45s cubic-bezier(.22, 1, .36, 1),
+                background .18s ease, box-shadow .18s ease;
+  }
+  .stage-btn .dot {
+    flex: 0 0 28px; width: 28px; height: 28px; border-radius: 50%;
+    display: grid; place-items: center;
+    font-size: 11px; font-weight: 700; font-variant-numeric: tabular-nums;
+    background: var(--bg); color: var(--text);
+    border: 1px solid var(--hairline);
+    transition: background .18s ease, color .18s ease, border-color .18s ease;
+  }
+  .stage-btn .lbl {
+    flex: 0 0 auto;                 /* never shrink: keeps scrollWidth honest */
+    overflow: hidden; white-space: nowrap;
+    font-size: 12px; font-weight: 600;
+    padding: 0 12px 0 8px;               /* right padding = pill tail */
+    opacity: 0;
+    transform: translateX(-4px);
+    transition: opacity .22s ease, transform .22s ease;
+  }
+  .stage-btn.active {
+    width: calc(28px + var(--w, 110px)); /* dot + label (label keeps its own paddings) */
+    background: var(--accent); color: #fff;
+    box-shadow: 0 2px 10px rgba(0, 113, 227, 0.35);
+  }
+  .stage-btn.active .dot {
+    background: rgba(255, 255, 255, 0.25); color: #fff; border-color: transparent;
+  }
+  .stage-btn.active .lbl { opacity: 1; transform: none; transition-delay: .12s; }
+  .stage-btn:hover:not(.active):not(:disabled) { background: rgba(0, 0, 0, 0.04); }
+  .stage-btn:hover:not(.active):not(:disabled) .dot { border-color: var(--text-2); }
+  .stage-btn:disabled { opacity: 0.4; cursor: default; }
+
+  /* Stage-scoped top-bar actions: Demo/Clear belong to the mesh stage,
+     Export TXT to mesh+model. Reset View / Hide Panels stay available
+     everywhere (they are inside .topbar-actions, which is always shown). */
+  body.mode-model #btnDemo, body.mode-model #btnClear,
+  body.mode-solve #btnDemo, body.mode-solve #btnClear,
+  body.mode-solve #btnExport { display: none; }
+
+  @media (max-width: 900px) {
+    .stage-nav { gap: 12px; margin: 0 8px; }
+    .stage-btn .lbl { font-size: 11.5px; }
+  }
+  /* Narrow screens: fall back to dots with a strong active ring (the pill
+     label is dropped below 640px; the current stage stays obvious via the
+     ring + the hint bar). */
+  @media (max-width: 640px) {
+    .stage-nav::before { display: none; }
+    .stage-nav { gap: 10px; }
+    .stage-btn .lbl { display: none; }
+    .stage-btn.active { width: 28px; box-shadow: 0 0 0 5px rgba(0, 113, 227, 0.14); }
+    .stage-btn.active .dot { background: var(--accent); }
+  }
+
   /* ---------- Buttons ---------- */
   .btn {
     font-family: inherit;
@@ -305,21 +387,50 @@
   .modal-actions { display: flex; justify-content: center; }
   .modal-actions .btn + .btn { margin-left: 8px; }
 
-  /* ---------- Boundary-condition phase ---------- */
-  /* Mesh controls are visually locked while the user sets loads/supports. */
-  .panel-controls.locked .segmented,
-  .panel-controls.locked input,
-  .panel-controls.locked .toggle-row {
-    opacity: 0.45;
-    pointer-events: none;
+  /* ---------- Model (problem + BC) & Solve stage panels ----------
+     Panels are shown/hidden by the workflow stage on #stage:
+       mesh  (default) — draw controls + stats + legend
+       model           — model panel (problem + BC) + stats
+       solve           — solver panel (field/params/Solve) + legend */
+  .panel-model {
+    top: 16px; left: 16px; width: 288px;
+    max-height: calc(100% - 32px); overflow-y: auto;
+    opacity: 0; visibility: hidden; pointer-events: none;
   }
-  /* The conditions panel only appears during the BC phase. */
-  .panel-conditions {
-    display: none;
-    right: 16px; bottom: 16px;
-    width: 230px; padding: 14px;
+  .stage.model .panel-controls,
+  .stage.model .panel-legend {
+    opacity: 0; visibility: hidden; pointer-events: none;
   }
-  .stage.bc .panel-conditions { display: block; }
+  .stage.model .panel-model {
+    opacity: 1; visibility: visible; pointer-events: auto;
+  }
+  .stage.solve .panel-controls,
+  .stage.solve .panel-model,
+  .stage.solve .panel-stats,
+  .stage.solve .panel-legend {
+    opacity: 0; visibility: hidden; pointer-events: none;
+  }
+  .panel-solver, .panel-solver-info {
+    opacity: 0; visibility: hidden; pointer-events: none;
+  }
+  .stage.solve .panel-solver,
+  .stage.solve .panel-solver-info {
+    opacity: 1; visibility: visible; pointer-events: auto;
+  }
+  /* The model / solver panels live where the Draw Mode panel did (top-left). */
+  .panel-solver      { top: 16px; left: 16px; width: 288px; max-height: calc(100% - 32px); overflow-y: auto; }
+  .panel-solver-info { top: 16px; right: 16px; min-width: 168px; padding: 12px 14px; }
+  /* 'Hide Panels' (stage.ui-off) must WIN over the stage show-rules above
+     (.stage.model/.stage.solve rules have the same specificity and would
+     otherwise keep the panels visible). These overrides come LATER in the
+     cascade on purpose. */
+  .stage.ui-off .panel-model,
+  .stage.ui-off .panel-solver,
+  .stage.ui-off .panel-solver-info {
+    opacity: 0; visibility: hidden; pointer-events: none;
+  }
+
+  /* BC group list (shared by the model panel & the BC section). */
   .bc-actions { display: flex; flex-direction: column; gap: 6px; margin-bottom: 10px; }
   .bc-actions .btn { width: 100%; }
   .bc-list { max-height: 170px; overflow-y: auto; }
@@ -338,7 +449,7 @@
   }
   .bc-empty { font-size: 11px; color: var(--text-2); padding: 6px 2px; }
 
-  /* ---------- Condition modal (name / vector / type) ---------- */
+  /* ---------- Boundary-condition modal (name + dynamic fields) ---------- */
   .modal-narrow { width: 320px; }
   .cond-form { text-align: left; margin-bottom: 14px; }
   .cond-form .label-row { margin-bottom: 6px; }
@@ -353,53 +464,13 @@
   .cond-vec .cond-input { flex: 1; }
   .cond-type { margin-bottom: 12px; }
 
-  /* ---------- Solver phase ---------- */
-  /* Floating "Solver Start" launcher at the bottom-right of the stage.
-     Clicking it hides every pre-processing component and reveals the
-     solver components (the 'solve' phase). */
-  .btn-solver {
-    position: absolute;
-    right: 20px; bottom: 16px;
-    z-index: 15;
-    box-shadow: 0 4px 16px rgba(0,113,227,0.3);
-  }
-  /* Solve phase: pre-processing components (top bar actions + panels)
-     are hidden, solver components are shown. */
-  body.solve-mode .topbar-actions { display: none; }
-  /* …but a dedicated solve-phase action group (Reset View / Hide Panels)
-     stays available in the top bar's right side during the solve phase. */
-  .solve-actions { display: none; }
-  body.solve-mode .solve-actions { display: flex; }
-  .stage.solve .panel-controls,
-  .stage.solve .panel-stats,
-  .stage.solve .panel-legend {
-    opacity: 0; visibility: hidden; pointer-events: none;
-  }
-  .panel-solver, .panel-solver-info {
-    opacity: 0; visibility: hidden; pointer-events: none;
-  }
-  .stage.solve .panel-solver,
-  .stage.solve .panel-solver-info {
-    opacity: 1; visibility: visible; pointer-events: auto;
-  }
-  /* The solver panel lives where the Draw Mode panel did (top-left). */
-  .panel-solver      { top: 16px; left: 16px; width: 288px; max-height: calc(100% - 32px); overflow-y: auto; }
-  .panel-solver-info { top: 16px; right: 16px; min-width: 168px; padding: 12px 14px; }
-  /* 'Hide Panels' (stage.ui-off) must WIN over the solve-phase show rules
-     above: .stage.solve .panel-solver(-info) has the same specificity and
-     would otherwise keep the solver panels visible. This override comes
-     LATER in the cascade on purpose. */
-  .stage.ui-off .panel-solver,
-  .stage.ui-off .panel-solver-info {
-    opacity: 0; visibility: hidden; pointer-events: none;
-  }
   /* Only the Solve button stretches full-width. (Do NOT use
      `.panel-solver .btn` — that would also stretch the compact ✕ delete
      buttons inside the BC list to 100%.) The Add-… BC buttons already
      get full width from `.bc-actions .btn`. */
   #btnSolve { width: 100%; }
 
-  /* Dropdowns inside the solver panel (problem type / display field). */
+  /* Dropdowns inside the model / solver panels (problem type / field). */
   select.cond-input {
     appearance: none; -webkit-appearance: none;
     background-image: url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'%3E%3Cpath d='M0 0l5 6 5-6z' fill='%236e6e73'/%3E%3C/svg%3E");
@@ -407,7 +478,7 @@
     padding-right: 28px; cursor: pointer;
   }
 
-  /* Parameter inputs (solver panel: conductivity k, heat source f, …). */
+  /* Parameter inputs (solver panel: E, ν, k, f, deform, …). */
   .param-row {
     display: flex; align-items: center; justify-content: space-between;
     gap: 8px; margin-bottom: 8px;
@@ -445,21 +516,21 @@
     text-align: center;
   }
 
-  /* The BC conditions panel sits above the solver launcher (both live on
-     the right side) so they never overlap. */
-  .panel-conditions { bottom: 72px; }
-
   /* ---------- Responsive ---------- */
+  @media (max-width: 900px) {
+    .brand h1 { display: none; }
+  }
   @media (max-width: 720px) {
     .topbar { padding: 0 12px; }
     .brand p { display: none; }
-    .panel-controls { left: 10px; right: 10px; top: 10px; width: auto; padding: 12px; }
+    .stage-nav { gap: 8px; margin: 0 4px; }
+    .panel-controls,
+    .panel-model,
+    .panel-solver { left: 10px; right: 10px; top: 10px; width: auto; padding: 12px; }
     .panel-stats { left: 10px; right: 10px; top: auto; bottom: 10px; min-width: 0; }
     .panel-legend { display: none; }
     .hint-bar { bottom: 132px; }
-    .stage.bc .panel-controls { display: none; }          /* BC phase: swap panels */
-    .panel-conditions { left: 10px; right: 10px; top: 10px; bottom: auto; width: auto; }
-    .panel-solver { left: 10px; right: 10px; top: 10px; width: auto; }
+    .stage.model .panel-controls { display: none; }   /* model: swap panels */
     .panel-solver-info { left: 10px; right: 10px; top: auto; bottom: 10px; min-width: 0; }
   }
 </style>
@@ -472,20 +543,25 @@
       <h1>VEM Studio</h1>
       <span class="tag tag-online">online</span>
     </div>
+    <!-- Workflow stepper: O——O——O — the active dot expands into a pill
+         with the stage title. Click a dot to jump between stages. -->
+    <nav class="stage-nav" id="stageNav" aria-label="Workflow stage">
+      <button class="stage-btn active" data-phase="mesh" title="Draw geometry & mesh it">
+        <span class="dot">1</span><span class="lbl">Draw &amp; Mesh</span>
+      </button>
+      <button class="stage-btn" data-phase="model" title="Pick a problem & set its boundary conditions" disabled>
+        <span class="dot">2</span><span class="lbl">Model &amp; BC</span>
+      </button>
+      <button class="stage-btn" data-phase="solve" title="Solve & inspect results" disabled>
+        <span class="dot">3</span><span class="lbl">Solve &amp; Post</span>
+      </button>
+    </nav>
     <div class="topbar-actions">
       <button id="btnDemo"   class="btn btn-ghost">Demo</button>
       <button id="btnClear"  class="btn btn-ghost">Clear</button>
       <button id="btnResetView" class="btn btn-ghost">Reset View</button>
       <button id="btnPanels" class="btn btn-ghost">Hide Panels</button>
-      <button id="btnPhase"  class="btn btn-ghost">Set BCs</button>
       <button id="btnExport" class="btn btn-primary">Export TXT</button>
-    </div>
-    <!-- Solve-phase top-bar actions: the pre-processing buttons above are
-         hidden during the solve phase (body.solve-mode .topbar-actions);
-         this group stays available there and only there. -->
-    <div class="topbar-actions solve-actions">
-      <button id="btnSolvePanels" class="btn btn-ghost">Hide Panels</button>
-      <button id="btnSolveResetView" class="btn btn-ghost">Reset View</button>
     </div>
   </header>
 
@@ -564,21 +640,28 @@
       </span>
     </div>
 
-    <!-- Solver launcher: bottom-right, toggles the 'solve' phase.
-         In the solve phase the pre-processing components are hidden and
-         the solver components below are revealed. -->
-    <button id="btnSolver" class="btn btn-ghost btn-solver" title="Enter the solver phase">Solver Start</button>
-
-    <!-- Solver phase components (hidden until "Solver Start" is clicked).
-         The shell UI (problem / display-field dropdowns, Solve button,
-         heatmap legend) is driven by js/solver/solver-ui.js; each solver
-         block (js/solver/<problem>/) registers its metadata there. -->
-    <aside class="panel panel-solver" id="solverPanel">
-      <span class="section-label">Solver</span>
+    <!-- Stage 2 (model) panel: choose the problem, then set ITS boundary
+         conditions. The BC buttons / list are driven by the unified BC
+         controller (js/solver/solver-bc.js) from the active block's
+         metadata, so both Poisson and Elasticity share this one panel. -->
+    <aside class="panel panel-model" id="modelPanel">
+      <span class="section-label">Model</span>
       <div class="panel-section">
         <label class="section-label" for="solverProblemSel">Problem</label>
         <select id="solverProblemSel" class="cond-input" aria-label="Problem type"></select>
       </div>
+      <div class="panel-section" id="solverBcSection">
+        <span class="section-label">Boundary Conditions</span>
+        <p class="hint" id="solverBcDefault"></p>
+        <div class="bc-actions" id="solverBcButtons"></div>
+        <div class="bc-list" id="solverBcList"></div>
+      </div>
+    </aside>
+
+    <!-- Stage 3 (solve) components: display-field dropdown, parameters,
+         Solve button, heatmap legend — driven by js/solver/solver-ui.js. -->
+    <aside class="panel panel-solver" id="solverPanel">
+      <span class="section-label">Solver</span>
       <div class="panel-section">
         <label class="section-label" for="solverFieldSel">Display Field</label>
         <select id="solverFieldSel" class="cond-input" aria-label="Heatmap display field"></select>
@@ -586,12 +669,6 @@
       <div class="panel-section" id="solverParamsSection">
         <span class="section-label">Parameters</span>
         <div id="solverParams"></div>
-      </div>
-      <div class="panel-section" id="solverBcSection">
-        <span class="section-label">Boundary Conditions</span>
-        <p class="hint" id="solverBcDefault">Default: all boundary edges are zero-flux Neumann (insulated).</p>
-        <div class="bc-actions" id="solverBcButtons"></div>
-        <div class="bc-list" id="solverBcList"></div>
       </div>
       <div class="panel-section">
         <button id="btnSolve" class="btn btn-primary" title="Solve">Solve</button>
@@ -630,60 +707,21 @@
         <input type="file" id="fileInput" accept="image/*" style="display:none" />
       </div>
     </div>
-    <aside class="panel panel-conditions">
-      <span class="section-label">Boundary Conditions</span>
-      <div class="bc-actions">
-        <button id="btnAddPointLoad" class="btn btn-ghost">Point Load</button>
-        <button id="btnAddDistLoad"  class="btn btn-ghost">Distributed Load</button>
-        <button id="btnAddSupport"   class="btn btn-ghost">Support</button>
-      </div>
-      <div class="bc-list" id="bcList"></div>
-    </aside>
-
-    <div class="modal-overlay" id="condModal" role="dialog" aria-modal="true" aria-label="Boundary condition">
+    <!-- Unified BC modal: the field rows (vector fx/fy, scalar value, or
+         type segmented) are built dynamically by js/solver/solver-bc.js
+         from the active problem block's BC metadata. -->
+    <div class="modal-overlay" id="bcModal" role="dialog" aria-modal="true" aria-label="Boundary condition">
       <div class="modal modal-narrow">
-        <h2 id="condTitle">Point Load</h2>
+        <h2 id="bcTitle">Point Load</h2>
         <div class="cond-form">
-          <div class="label-row"><label for="condName">Name</label></div>
-          <input type="text" id="condName" class="cond-input" autocomplete="off" />
-          <div id="condVec">
-            <div class="label-row"><label>Load vector (fx, fy) — +X right, +Y up</label></div>
-            <div class="cond-vec">
-              <input type="number" id="condFx" class="cond-input" step="any" placeholder="fx" />
-              <input type="number" id="condFy" class="cond-input" step="any" placeholder="fy" />
-            </div>
-          </div>
-          <div class="cond-type" id="condTypeRow">
-            <div class="label-row"><label>Support type</label></div>
-            <div class="segmented" id="condTypeSeg">
-              <button class="seg active" data-value="fixed">Fixed</button>
-              <button class="seg" data-value="hinge">Hinge</button>
-            </div>
-          </div>
-          <p class="modal-hint" id="condCount"></p>
+          <div class="label-row"><label for="bcName">Name</label></div>
+          <input type="text" id="bcName" class="cond-input" autocomplete="off" />
+          <div id="bcFields"></div>
+          <p class="modal-hint" id="bcCount"></p>
         </div>
         <div class="modal-actions">
-          <button id="btnCondOk" class="btn btn-primary">OK</button>
-          <button id="btnCondCancel" class="btn btn-ghost">Cancel</button>
-        </div>
-      </div>
-    </div>
-
-    <!-- Solver BC modal: scalar value (temperature / heat flux) on
-         boundary edges, driven by js/solver/solver-bc.js. -->
-    <div class="modal-overlay" id="solverCondModal" role="dialog" aria-modal="true" aria-label="Solver boundary condition value">
-      <div class="modal modal-narrow">
-        <h2 id="solverCondTitle">Temperature</h2>
-        <div class="cond-form">
-          <div class="label-row"><label for="solverCondName">Name</label></div>
-          <input type="text" id="solverCondName" class="cond-input" autocomplete="off" />
-          <div class="label-row"><label id="solverCondValueLabel" for="solverCondValue">Value (u, °C)</label></div>
-          <input type="number" id="solverCondValue" class="cond-input" step="any" />
-          <p class="modal-hint" id="solverCondCount"></p>
-        </div>
-        <div class="modal-actions">
-          <button id="btnSolverCondOk" class="btn btn-primary">OK</button>
-          <button id="btnSolverCondCancel" class="btn btn-ghost">Cancel</button>
+          <button id="btnBcOk" class="btn btn-primary">OK</button>
+          <button id="btnBcCancel" class="btn btn-ghost">Cancel</button>
         </div>
       </div>
     </div>
@@ -700,12 +738,13 @@
        7. js/export.js    — TXT output formatting
        8. js/demo.js      — demo polygon data
        9. js/image.js     — image import: bitmap → contour polygon
-      10. js/app.js       — controller (state, DOM, interaction)
-      11. js/solver/solver-ui.js — shared solve-phase shell (problem / field
-                                   dropdowns, Solve button, heatmap legend)
-      12. js/solver/solver-bc.js — solver boundary conditions: boundary-edge
-                                   selection, groups, scalar-value modal,
-                                   canvas markers, Solve gating
+      10. js/app.js       — controller: workflow stages, state, interaction
+      11. js/solver/solver-ui.js — shared solver shell (problem/field
+                                   dropdowns, parameters, Solve, legend)
+      12. js/solver/solver-bc.js — UNIFIED BC controller for the 'model'
+                                   stage: metadata-driven BC buttons/modal/
+                                   list/markers + solve gating for every
+                                   problem (mechanical & scalar BCs)
       13. js/solver/matrix.js     — shared sparse linear algebra (CRS + CG)
       14. js/solver/poisson/vem.js      — Poisson VEM element stiffness
       15. js/solver/poisson/assembly.js — Poisson assembly + Dirichlet/Neumann

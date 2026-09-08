@@ -1,8 +1,9 @@
 /* ============================================================
    app.js — The controller: state, DOM, interaction, pipeline
    ============================================================
-   This is the ONLY file that touches the DOM and the `state`
-   object. It coordinates the pure modules loaded before it:
+   This file drives the PRE-PROCESSING pipeline (mesh stage) and
+   owns the workflow-stage machine (mesh → model → solve). It
+   coordinates the pure modules loaded before it:
 
      Constants — tuning parameters & colors
      Geometry  — vector math & geometric predicates
@@ -12,6 +13,13 @@
      Renderer  — canvas drawing
      Export    — TXT output
      Demo      — sample polygon data
+
+   Workflow stages (phase):
+     mesh  — draw/import geometry, tune the mesh (NO boundary
+             conditions here anymore)
+     model — pick the problem (Poisson / Elasticity …) and set ITS
+             boundary conditions (unified BC controller: solver-bc)
+     solve — parameters, Solve, post-processed results (heatmaps…)
 
    Read order: state -> pipeline -> interaction -> wiring -> init.
    ============================================================ */
@@ -40,6 +48,8 @@
   const canvas      = document.getElementById('canvas');
   const ctx         = canvas.getContext('2d');
   const stage       = document.getElementById('stage');
+  const stageNav    = document.getElementById('stageNav');
+  const stageBtns   = Array.from(document.querySelectorAll('#stageNav .stage-btn'));
   const segButtons  = Array.from(document.querySelectorAll('#gridTypeSeg .seg'));
   const drawModeButtons = Array.from(document.querySelectorAll('#drawModeSeg .seg'));
   const cellSizeEl  = document.getElementById('cellSize');
@@ -50,8 +60,6 @@
   const btnResetView = document.getElementById('btnResetView');
   const btnExport   = document.getElementById('btnExport');
   const btnPanels   = document.getElementById('btnPanels');
-  const btnSolvePanels = document.getElementById('btnSolvePanels');     // solve-phase top bar
-  const btnSolveResetView = document.getElementById('btnSolveResetView');
   const importModal = document.getElementById('importModal');
   const btnImportPick  = document.getElementById('btnImportPick');
   const btnImportClose = document.getElementById('btnImportClose');
@@ -64,24 +72,8 @@
   const statNodes   = document.getElementById('statNodes');
   const statElems   = document.getElementById('statElems');
   const statSamples = document.getElementById('statSamples');
-  const btnPhase    = document.getElementById('btnPhase');
-  const btnSolver   = document.getElementById('btnSolver');
   const controlsPanel = document.getElementById('controlsPanel');
-  const btnAddPointLoad = document.getElementById('btnAddPointLoad');
-  const btnAddDistLoad  = document.getElementById('btnAddDistLoad');
-  const btnAddSupport   = document.getElementById('btnAddSupport');
-  const bcList      = document.getElementById('bcList');
-  const condModal   = document.getElementById('condModal');
-  const condTitle   = document.getElementById('condTitle');
-  const condName    = document.getElementById('condName');
-  const condFx      = document.getElementById('condFx');
-  const condFy      = document.getElementById('condFy');
-  const condVec     = document.getElementById('condVec');
-  const condTypeRow = document.getElementById('condTypeRow');
-  const condTypeSegButtons = Array.from(document.querySelectorAll('#condTypeSeg .seg'));
-  const condCount   = document.getElementById('condCount');
-  const btnCondOk   = document.getElementById('btnCondOk');
-  const btnCondCancel = document.getElementById('btnCondCancel');
+  const bcModal     = document.getElementById('bcModal');
   // Touch adaptation (coarse-pointer devices get visible equivalents of
   // Enter / Backspace / Esc; zoom is pinch-only; desktop is untouched).
   const hintText      = document.getElementById('hintText');
@@ -89,7 +81,6 @@
   const btnTouchDone  = document.getElementById('btnTouchDone');
   const btnTouchUndo  = document.getElementById('btnTouchUndo');
   const btnTouchCancel = document.getElementById('btnTouchCancel');
-  const solverCondModalEl = document.getElementById('solverCondModal');
 
   /* ============================================================
      2. Application state — the single source of truth
@@ -106,12 +97,13 @@
     viewCells: [],          // background lattice for the CURRENT view (fills the viewport)
     mesh: null,             // { nodes, elements, interiorCount, boundaryCount }
     samples: [],            // polygon vertices used as the clip boundary
-    phase: 'mesh',          // 'mesh' (draw/edit) | 'bc' (conditions) | 'solve'
-    pointLoads: [],         // { name, nodeIds[], fx, fy }
-    distLoads: [],          // { name, edges: [[a,b],...], fx, fy }
+    phase: 'mesh',          // 'mesh' (draw/mesh) | 'model' (problem+BC) | 'solve'
+    pointLoads: [],         // mechanical BCs (elasticity): { name, nodeIds[], fx, fy }
+    pressures: [],          // mechanical BCs (elasticity): { name, edges:[[a,b],...], p } — uniform
+                            // pressure on BOUNDARY edges, p > 0 pushes INTO the domain
     supports: [],           // { name, type: 'fixed'|'hinge', nodeIds[] }
     allEdges: [],           // cached Mesh.allEdges (boundary + interior) for the current mesh
-    bcSel: null,            // live selection: { kind, nodes:Set, edges:Map, box, ... }
+    bcSel: null,            // live selection session (managed by solver-bc in 'model')
     cursor: null,           // live pointer position (world coords)
     view: { zoom: 1, ox: 0, oy: 0 },  // view transform: screen = world*zoom + o
     dpr: 1,
@@ -147,19 +139,22 @@
     const m = state.cellSize * 2;
     const rect = { minX: -m, minY: -m, maxX: state.w + m, maxY: state.h + m };
     state.cells = Grid.generateCells(state.gridType, rect, state.cellSize);
-    // Node ids change whenever the mesh is rebuilt, so boundary conditions
-    // (which reference node/edge ids) are invalidated. Cancel live selection.
-    const hadConditions = state.pointLoads.length || state.distLoads.length || state.supports.length;
+    // Node ids change whenever the mesh is rebuilt, so every boundary
+    // condition (mechanical + scalar, which reference node/edge ids) is
+    // invalidated. Tell the unified BC controller to drop its data.
+    const hadConditions = state.pointLoads.length || state.pressures.length || state.supports.length;
     state.pointLoads = [];
-    state.distLoads = [];
+    state.pressures = [];
     state.supports = [];
     state.solution = null;   // solved results reference node ids too — invalidate with the mesh
-    if (state.bcSel) cancelBcSelect();
+    if (state.bcSel) state.bcSel = null;
+    const SB = global.MeshStudio && global.MeshStudio.SolverBC;
+    if (SB && typeof SB.onMeshChanged === 'function') SB.onMeshChanged();
     computeMesh();
     state.allEdges = state.mesh ? Mesh.allEdges(state.mesh) : [];
     updateViewGrid();
     updateReadouts();
-    renderBcList();
+    syncStageNav(); // mesh availability gates the model/solve stepper dots
     renderer.render(state);
     syncTouchUI(); // refresh() renders directly — keep the touch bar in sync
     // A rebuilt mesh invalidates any solved results (state.solution is
@@ -232,9 +227,8 @@
   function syncPanels() {
     const drawing = state.drawing.length > 0 || state.freehandActive;
     stage.classList.toggle('drawing', drawing);
-    // Panel toggle is unavailable mid-drawing — both the pre-processing
-    // button and the solve-phase twin follow the same state.
-    [btnPanels, btnSolvePanels].forEach(b => { if (b) b.disabled = drawing; });
+    // Panel toggle is unavailable mid-drawing.
+    if (btnPanels) btnPanels.disabled = drawing;
   }
 
   /** Manual show/hide toggle for the floating panels. */
@@ -242,16 +236,14 @@
   function togglePanels() {
     panelsHidden = !panelsHidden;
     stage.classList.toggle('ui-off', panelsHidden);
-    const label = panelsHidden ? 'Show Panels' : 'Hide Panels';
-    [btnPanels, btnSolvePanels].forEach(b => { if (b) b.textContent = label; });
+    if (btnPanels) btnPanels.textContent = panelsHidden ? 'Show Panels' : 'Hide Panels';
   }
 
   const HINT_POINT    = 'Click to place polygon vertices · double-click, Enter, or click the first point to close';
   const HINT_FREEHAND = 'Click and drag to trace a shape · release to close it automatically';
-  const HINT_DONE     = 'Mesh generated — adjust the controls or press Clear to redraw';
-  const HINT_BC_IDLE  = 'Boundary-condition phase — mesh is locked. Add loads & supports from the panel.';
-  const HINT_BC_SELECT = 'Click nodes/edges or drag a box to select · Enter to confirm · Esc to cancel';
-  const HINT_SOLVER   = 'Solver phase — mesh & boundary conditions are locked. Pick a problem, set BCs, press Solve.';
+  const HINT_DONE     = 'Mesh generated — use the stage bar above to set up the model';
+  const HINT_MODEL    = 'Model stage — mesh is locked. Pick a problem, then set its boundary conditions.';
+  const HINT_SOLVER   = 'Solve stage — mesh & boundary conditions are locked. Tune the parameters and press Solve.';
 
   /* ============================================================
      4.5  Touch capability & adaptive controls (Apple-style)
@@ -303,7 +295,12 @@
     // A second finger landing must not corrupt in-progress single-touch
     // gestures (freehand stroke / BC rubber-band drag).
     if (state.freehandActive) { state.freehandActive = false; state.drawing = []; syncPanels(); }
-    if (state.bcSel) { cancelBcBox(); if (state.bcSel) state.bcSel.dragStart = null; }
+    if (state.bcSel) {
+      // solver-bc owns the selection session; ask it to drop the drag box.
+      const SB = global.MeshStudio && global.MeshStudio.SolverBC;
+      if (SB && typeof SB.cancelDrag === 'function') SB.cancelDrag();
+      else if (state.bcSel) state.bcSel.dragStart = null;
+    }
   }
 
   /** Returns true when the pointer event was consumed by pinch handling. */
@@ -361,12 +358,10 @@
     if (document.body) document.body.classList.toggle('touch-ui', touchUI);
     if (!hintBar || !touchUI) return;
     const modalOpen = importModal.classList.contains('visible') ||
-                      condModal.classList.contains('visible') ||
-                      solverCondModalEl.classList.contains('visible');
+                      (bcModal && bcModal.classList.contains('visible'));
     const session = !modalOpen && (
       (state.phase === 'mesh' && (state.drawing.length || state.freehandActive)) ||
-      (state.phase === 'bc' && state.bcSel) ||
-      (state.phase === 'solve' && (() => {
+      ((state.phase === 'model' || state.phase === 'solve') && (() => {
         const SB = global.MeshStudio && global.MeshStudio.SolverBC;
         return !!(SB && typeof SB.selecting === 'function' && SB.selecting());
       })())
@@ -385,7 +380,7 @@
     let t;
     if (text) t = text;
     else if (state.phase === 'solve') t = HINT_SOLVER;
-    else if (state.phase === 'bc') t = HINT_BC_IDLE;
+    else if (state.phase === 'model') t = HINT_MODEL;
     else if (state.polygon) t = HINT_DONE;
     else t = state.drawMode === 'freehand' ? HINT_FREEHAND : HINT_POINT;
     if (hintText) hintText.textContent = touchUI ? localizeTouch(t) : t;
@@ -481,7 +476,7 @@
     state.cursor = toLocal(e);
 
     if (phaseHandler('pointermove', e)) return;
-    if (state.phase === 'bc') { bcPointerMove(e); return; }
+    if (state.phase !== 'mesh') return; // model/solve events belong to phase plugins
 
     if (state.freehandActive) {
       // Sample the stroke, thinning dense points by a minimum spacing
@@ -504,7 +499,7 @@
     // pointermove — otherwise they would anchor on a stale (or null) point.
     state.cursor = toLocal(e);
     if (phaseHandler('pointerdown', e)) return;
-    if (state.phase === 'bc') { bcPointerDown(e); return; }
+    if (state.phase !== 'mesh') return; // model/solve events belong to phase plugins
     if (state.polygon) return; // polygon finalized — use Clear to redraw
 
     if (state.drawMode === 'freehand') {
@@ -535,14 +530,14 @@
   function onPointerUp(e) {
     if (handlePinchEvent('up', e)) return; // lift after pinch → ignore
     if (phaseHandler('pointerup', e)) return;
-    if (state.phase === 'bc') { bcPointerUp(); return; }
+    if (state.phase !== 'mesh') return;
     if (state.freehandActive) finishFreehand();
   }
 
   function onPointerCancel(e) {
     if (handlePinchEvent('cancel', e)) return;
     if (phaseHandler('pointercancel', e)) return;
-    if (state.phase === 'bc') { cancelBcBox(); return; }
+    if (state.phase !== 'mesh') return;
     if (state.freehandActive) {
       state.freehandActive = false;
       state.drawing = [];
@@ -553,25 +548,14 @@
 
   function onDblClick(e) {
     e.preventDefault();
+    if (state.phase !== 'mesh') return;
     if (state.polygon || state.drawMode === 'freehand') return;
     finishPolygon();
   }
 
   function onKeydown(e) {
     if (phaseHandler('keydown', e)) return;
-    if (state.phase === 'bc') {
-      // Boundary-condition phase: Enter confirms the selection, Esc cancels.
-      if (e.key === 'Enter') {
-        if (e.target && e.target.tagName === 'BUTTON') e.preventDefault();
-        if (state.bcSel) openConditionModal(state.bcSel.kind);
-      } else if (e.key === 'Escape') {
-        if (importModal.classList.contains('visible')) closeImportModal();
-        else if (condModal.classList.contains('visible')) closeConditionModal();
-        else cancelBcSelect();
-      }
-      return;
-    }
-
+    if (state.phase !== 'mesh') return; // non-mesh keys belong to phase plugins
     if (e.key === 'Enter') {
       // If a button has focus, Enter would ALSO re-click that button;
       // suppress the native re-click so Enter always means "finish".
@@ -591,7 +575,7 @@
 
   /** Finalize a set of raw points into the working polygon (both modes). */
   function finalizePolygon(points) {
-    if (state.phase === 'bc') return; // mesh is locked during the BC phase
+    if (state.phase !== 'mesh') return; // geometry is locked after the mesh stage
     if (!points || points.length < 3) {
       showToast('Not enough points to form a polygon');
       return;
@@ -625,7 +609,7 @@
   }
 
   function clearPolygon() {
-    if (state.phase === 'bc') return; // mesh is locked during the BC phase
+    if (state.phase !== 'mesh') return; // geometry is locked after the mesh stage
     state.polygon = null;
     state.drawing = [];
     syncPanels();
@@ -643,7 +627,7 @@
      ============================================================ */
 
   function loadDemo() {
-    if (state.phase === 'bc') return; // mesh is locked during the BC phase
+    if (state.phase !== 'mesh') return; // geometry is locked after the mesh stage
     state.drawing = [];
     state.polygon = G.simplifyPolygon(Demo.buildPolygon(state.w, state.h));
     state.cursor = null;
@@ -657,10 +641,20 @@
       showToast('Nothing to export — draw a polygon first');
       return;
     }
+    // Scalar boundary-condition groups (Poisson temperature/flux) live in
+    // the unified BC controller; mechanical BCs (loads/supports) stay in
+    // state. Export whatever the current stage/model has defined.
+    let scalarBcs = null;
+    const SB = global.MeshStudio && global.MeshStudio.SolverBC;
+    if (SB && typeof SB.exportScalar === 'function') {
+      const arr = SB.exportScalar();
+      if (arr && arr.length) scalarBcs = arr;
+    }
     const text = Export.buildTxt(state.mesh, { height: state.h, fit: Constants.EXPORT_FIT }, {
       pointLoads: state.pointLoads,
-      distLoads: state.distLoads,
+      pressures: state.pressures,
       supports: state.supports,
+      scalarBcs,
     });
     const blob = new Blob([text], { type: 'text/plain' });
     const url = URL.createObjectURL(blob);
@@ -713,7 +707,7 @@
   }
 
   function onFileSelected() {
-    if (state.phase === 'bc') return; // mesh is locked during the BC phase
+    if (state.phase !== 'mesh') return; // geometry is locked after the mesh stage
     const file = fileInput.files && fileInput.files[0];
     if (!file) return;
     loadImageFile(file);
@@ -771,28 +765,42 @@
   }
 
   /* ============================================================
-     9. Boundary conditions (loads & supports)
+     9. Workflow stages (mesh → model → solve)
+     ============================================================
+     Boundary-condition SESSIONS are NOT implemented here anymore:
+     they live in the unified BC controller (js/solver/solver-bc.js),
+     which registers the 'model' phase handlers via App.registerPhase
+     and renders into the model panel (#solverBcButtons/#solverBcList).
      ============================================================ */
 
-  let condState = null; // { kind } while the condition modal is open
-
-  /** Switch between phases: 'mesh' (draw/edit) | 'bc' (conditions) | 'solve'. */
+  /** Switch between the three workflow stages ('mesh'|'model'|'solve'). */
   function setPhase(p) {
     if (p === state.phase) return;
-    if ((p === 'bc' || p === 'solve') && (!state.mesh || !state.mesh.nodes.length)) {
+    if (p !== 'mesh' && (!state.mesh || !state.mesh.nodes.length)) {
       showToast('Draw a polygon first to create a mesh');
       return;
+    }
+    // Solve requires the current problem's BCs to be complete — otherwise
+    // route to the model stage where they are edited.
+    if (p === 'solve') {
+      const SB = global.MeshStudio && global.MeshStudio.SolverBC;
+      if (SB && typeof SB.ready === 'function' && !SB.ready()) {
+        showToast(SB.reason ? SB.reason() : 'Finish the boundary conditions in the Model stage first');
+        if (state.phase !== 'model') setPhase('model');
+        return;
+      }
     }
     // Let the phase being left clean up after itself (solver blocks etc.).
     const exiting = phaseHandlers[state.phase];
     if (exiting && exiting.exit) exiting.exit();
     state.phase = p;
-    stage.classList.toggle('bc', p === 'bc');
+    stage.classList.toggle('model', p === 'model');
     stage.classList.toggle('solve', p === 'solve');
-    document.body.classList.toggle('solve-mode', p === 'solve'); // hides top-bar actions
-    cancelBcSelect();
+    document.body.classList.toggle('mode-mesh', p === 'mesh');
+    document.body.classList.toggle('mode-model', p === 'model');
+    document.body.classList.toggle('mode-solve', p === 'solve');
     syncPhaseControls();
-    syncSolverButton();
+    syncStageNav();
     setHint();
     scheduleRender();
     // Let the phase being entered set up (solver blocks etc.).
@@ -800,13 +808,11 @@
     if (entering && entering.enter) entering.enter();
   }
 
-  /** Lock/unlock the mesh controls and update the phase button. */
+  /** Lock/unlock mesh controls and stage-dot availability. */
   function syncPhaseControls() {
     const locked = state.phase !== 'mesh';
-    btnPhase.textContent = locked ? 'Edit Mesh' : 'Set BCs';
-    btnPhase.classList.toggle('btn-primary', locked);
-    btnDemo.disabled = locked;
-    btnClear.disabled = locked;
+    if (btnDemo) btnDemo.disabled = locked;
+    if (btnClear) btnClear.disabled = locked;
     controlsPanel.classList.toggle('locked', locked);
     segButtons.forEach(b => { b.disabled = locked; });
     drawModeButtons.forEach(b => { b.disabled = locked; });
@@ -814,238 +820,18 @@
     snapEl.disabled = locked || state.drawMode === 'freehand';
   }
 
-  /**
-   * The solver launcher (bottom-right) toggles between the solve phase and
-   * the phase the user came from ('mesh' or 'bc').
-   */
-  let solverReturnPhase = 'mesh';
-  function syncSolverButton() {
-    const active = state.phase === 'solve';
-    btnSolver.textContent = active ? 'Exit Solver' : 'Solver Start';
-    btnSolver.classList.toggle('btn-primary', active);
-    btnSolver.classList.toggle('btn-ghost', !active);
-  }
-  function toggleSolver() {
-    if (state.phase === 'solve') { setPhase(solverReturnPhase); return; }
-    solverReturnPhase = state.phase;
-    setPhase('solve');
-  }
-
-  /* ---------- Selection ---------- */
-
-  /** Begin a live selection for a new condition group. */
-  function startBcSelect(kind) {
-    if (state.phase !== 'bc') return;
-    cancelBcSelect();
-    state.bcSel = {
-      kind,                       // 'pointload' | 'distload' | 'support'
-      nodes: new Set(),           // selected node ids
-      edges: new Map(),           // selected boundary edges: key 'a_b' -> [a, b]
-      box: null,                  // rubber-band rect while dragging
-      dragStart: null,
-      dragging: false,
-    };
-    setHint(HINT_BC_SELECT);
-    scheduleRender();
-  }
-
-  function cancelBcSelect() {
-    if (!state.bcSel) return;
-    state.bcSel = null;
-    setHint();
-    scheduleRender();
-  }
-
-  /** Abort an in-progress rubber-band drag (pointercancel). */
-  function cancelBcBox() {
-    if (state.bcSel) {
-      state.bcSel.dragStart = null;
-      state.bcSel.dragging = false;
-      state.bcSel.box = null;
-      scheduleRender();
-    }
-  }
-
-  function bcPointerDown(e) {
-    if (!state.bcSel) return;
-    // Capture the pointer so the rubber-band keeps tracking the finger even
-    // when it moves over transient overlays / near the canvas edges.
-    if (canvas.setPointerCapture) {
-      try { canvas.setPointerCapture(e.pointerId); } catch (err) { /* noop */ }
-    }
-    const p = toLocal(e);
-    state.bcSel.dragStart = { x: p.x, y: p.y };
-    state.bcSel.dragging = false;
-    state.bcSel.box = null;
-  }
-
-  function bcPointerMove(e) {
-    if (!state.bcSel || !state.bcSel.dragStart) return;
-    if (!state.bcSel.dragging && V.dist(state.bcSel.dragStart, state.cursor) > worldDist(Constants.BC_DRAG_THRESHOLD)) {
-      state.bcSel.dragging = true;
-    }
-    if (state.bcSel.dragging) {
-      const a = state.bcSel.dragStart, b = state.cursor;
-      state.bcSel.box = {
-        minX: Math.min(a.x, b.x), minY: Math.min(a.y, b.y),
-        maxX: Math.max(a.x, b.x), maxY: Math.max(a.y, b.y),
-      };
-    }
-    scheduleRender();
-  }
-
-  function bcPointerUp() {
-    if (!state.bcSel) return;
-    if (state.bcSel.dragging) {
-      applyBoxSelection(state.bcSel.box);
-      state.bcSel.box = null;
-    } else {
-      clickSelect(state.bcSel.kind, state.cursor);
-    }
-    state.bcSel.dragStart = null;
-    state.bcSel.dragging = false;
-    scheduleRender();
-  }
-
-  /** Click selection: nearest node (point load / support) or boundary edge. */
-  function clickSelect(kind, p) {
-    const mesh = state.mesh;
-    if (!mesh) return;
-    if (kind === 'distload') {
-      const idx = Mesh.nearestEdge(state.allEdges, mesh, p, worldDist(Constants.BC_SELECT_RADIUS));
-      if (idx < 0) { showToast('No mesh edge near the click'); return; }
-      const [a, b] = state.allEdges[idx];
-      const key = a < b ? a + '_' + b : b + '_' + a;
-      if (state.bcSel.edges.has(key)) state.bcSel.edges.delete(key);
-      else state.bcSel.edges.set(key, [a, b]);
-    } else {
-      const id = Mesh.nearestNode(mesh, p, worldDist(Constants.BC_SELECT_RADIUS));
-      if (id < 0) { showToast('No node near the click'); return; }
-      if (state.bcSel.nodes.has(id)) state.bcSel.nodes.delete(id);
-      else state.bcSel.nodes.add(id);
-    }
-  }
-
-  /** Box selection: nodes inside the box, or edges with midpoint inside. */
-  function applyBoxSelection(box) {
-    const mesh = state.mesh;
-    if (!box || !mesh) return;
-    if (state.bcSel.kind === 'distload') {
-      for (const idx of Mesh.edgesInBox(state.allEdges, mesh, box)) {
-        const [a, b] = state.allEdges[idx];
-        const key = a < b ? a + '_' + b : b + '_' + a;
-        state.bcSel.edges.set(key, [a, b]);
-      }
-    } else {
-      for (const id of Mesh.nodesInBox(mesh, box)) state.bcSel.nodes.add(id);
-    }
-  }
-
-  /* ---------- Condition modal (name / vector / type) ---------- */
-
-  function defaultName(kind) {
-    const list = kind === 'pointload' ? state.pointLoads
-               : kind === 'distload' ? state.distLoads : state.supports;
-    const base = kind === 'pointload' ? 'Point_load'
-               : kind === 'distload' ? 'Distributed_load' : 'Support';
-    const names = new Set(list.map(g => g.name));
-    let n = 1;
-    while (names.has(base + '_' + n)) n++;
-    return base + '_' + n;
-  }
-
-  function openConditionModal(kind) {
-    const sel = state.bcSel;
-    if (!sel) return;
-    const count = kind === 'distload' ? sel.edges.size : sel.nodes.size;
-    if (!count) {
-      showToast(kind === 'distload' ? 'Select mesh edges first' : 'Select nodes first');
-      return;
-    }
-    condState = { kind };
-    condTitle.textContent = kind === 'pointload' ? 'Point Load'
-                          : kind === 'distload' ? 'Distributed Load' : 'Support';
-    condVec.style.display = kind === 'support' ? 'none' : '';
-    condTypeRow.style.display = kind === 'support' ? '' : 'none';
-    condName.value = defaultName(kind);
-    condFx.value = '0';
-    condFy.value = '0';
-    condTypeSegButtons.forEach(b => b.classList.toggle('active', b.dataset.value === 'fixed'));
-    condCount.textContent = count + (kind === 'distload' ? ' edges selected' : ' nodes selected');
-    condModal.classList.add('visible');
-    syncTouchUI(); // modal overlays the action bar → hide it
-    condName.focus();
-    condName.select();
-  }
-
-  function closeConditionModal() {
-    condModal.classList.remove('visible');
-    syncTouchUI();
-  }
-
-  function confirmCondition() {
-    if (!condState) return;
-    const kind = condState.kind;
-    const name = condName.value.trim();
-    if (!name) { showToast('Enter a name'); return; }
-    if (kind === 'support') {
-      const active = condTypeSegButtons.find(b => b.classList.contains('active'));
-      const type = (active && active.dataset.value) || 'fixed';
-      state.supports.push({ name, type, nodeIds: [...state.bcSel.nodes] });
-    } else {
-      const fx = parseFloat(condFx.value) || 0;
-      const fy = parseFloat(condFy.value) || 0;
-      if (kind === 'pointload') {
-        state.pointLoads.push({ name, nodeIds: [...state.bcSel.nodes], fx, fy });
-      } else {
-        state.distLoads.push({ name, edges: [...state.bcSel.edges.values()], fx, fy });
-      }
-    }
-    condState = null;
-    state.bcSel = null;
-    closeConditionModal();
-    renderBcList();
-    setHint();
-    scheduleRender();
-  }
-
-  /* ---------- Condition list ---------- */
-
-  function deleteCondition(kind, index) {
-    const arr = kind === 'point' ? state.pointLoads
-              : kind === 'dist' ? state.distLoads : state.supports;
-    arr.splice(index, 1);
-    renderBcList();
-    scheduleRender();
-  }
-
-  function renderBcList() {
-    bcList.textContent = '';
-    const items = [];
-    state.pointLoads.forEach((g, i) => items.push({ g, kind: 'point', i }));
-    state.distLoads.forEach((g, i) => items.push({ g, kind: 'dist', i }));
-    state.supports.forEach((g, i) => items.push({ g, kind: 'support', i }));
-    if (!items.length) {
-      const empty = document.createElement('div');
-      empty.className = 'bc-empty';
-      empty.textContent = 'No conditions yet';
-      bcList.appendChild(empty);
-      return;
-    }
-    for (const { g, kind, i } of items) {
-      const row = document.createElement('div');
-      row.className = 'bc-item';
-      const label = document.createElement('span');
-      const count = kind === 'dist' ? g.edges.length + ' edges' : g.nodeIds.length + ' nodes';
-      label.textContent = g.name + ' — ' + count;
-      const del = document.createElement('button');
-      del.className = 'btn btn-ghost bc-del';
-      del.textContent = '✕';
-      del.addEventListener('click', () => deleteCondition(kind, i));
-      row.appendChild(label);
-      row.appendChild(del);
-      bcList.appendChild(row);
-    }
+  /** Reflect the current stage on the O—O—O stepper in the top bar. */
+  function syncStageNav() {
+    stageBtns.forEach(b => {
+      const ph = b.dataset.phase;
+      b.classList.toggle('active', ph === state.phase);
+      const hasMesh = !!(state.mesh && state.mesh.nodes.length);
+      b.disabled = ph === 'mesh' ? false : !hasMesh;
+      // Measure each label's true width into --w so the pill can expand
+      // to exactly fit its text (width animation, not max-width).
+      const lbl = b.querySelector && b.querySelector('.lbl');
+      if (lbl) b.style.setProperty('--w', Math.ceil(lbl.scrollWidth + 1) + 'px');
+    });
   }
 
   /* ============================================================
@@ -1107,7 +893,7 @@
   }));
 
   drawModeButtons.forEach(btn => btn.addEventListener('click', () => {
-    if (state.phase === 'bc') return; // draw-mode controls are locked
+    if (state.phase !== 'mesh') return; // draw-mode controls are locked
     // "Import" is a momentary action, not a persistent draw mode: open the
     // guide modal and leave the previously selected mode untouched.
     if (btn.dataset.value === 'image') {
@@ -1140,10 +926,13 @@
   btnResetView.addEventListener('click', resetView);
   btnExport.addEventListener('click', exportTxt);
   btnPanels.addEventListener('click', togglePanels);
-  // Solve-phase top-bar twins (Reset View / Hide Panels stay usable while
-  // the solver is active and the pre-processing actions are hidden).
-  if (btnSolveResetView) btnSolveResetView.addEventListener('click', resetView);
-  if (btnSolvePanels) btnSolvePanels.addEventListener('click', togglePanels);
+
+  // ---------- Workflow stepper (top bar) ----------
+  // Click a stage dot to navigate. model/solve are disabled by syncStageNav
+  // until a mesh exists; BC readiness for 'solve' is checked in setPhase.
+  stageBtns.forEach(btn => btn.addEventListener('click', () => {
+    setPhase(btn.dataset.phase);
+  }));
 
   // ---------- Touch action bar ----------
   // Visible equivalents of Enter / Backspace / Esc. Mesh-phase actions call
@@ -1183,34 +972,6 @@
   fileInput.addEventListener('change', onFileSelected);
   importModal.addEventListener('click', (e) => {
     if (e.target === importModal) closeImportModal(); // click backdrop to close
-  });
-
-  // Boundary-condition phase
-  btnPhase.addEventListener('click', () => setPhase(state.phase === 'bc' ? 'mesh' : 'bc'));
-  btnSolver.addEventListener('click', toggleSolver);
-  btnAddPointLoad.addEventListener('click', () => startBcSelect('pointload'));
-  btnAddDistLoad.addEventListener('click', () => startBcSelect('distload'));
-  btnAddSupport.addEventListener('click', () => startBcSelect('support'));
-  btnCondOk.addEventListener('click', confirmCondition);
-  btnCondCancel.addEventListener('click', () => {
-    condState = null;
-    closeConditionModal();
-    cancelBcSelect();
-  });
-  condTypeSegButtons.forEach(btn => btn.addEventListener('click', () => {
-    condTypeSegButtons.forEach(b => b.classList.remove('active'));
-    btn.classList.add('active');
-  }));
-  // Enter inside the modal confirms the condition.
-  [condName, condFx, condFy].forEach(el => el.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter') { e.preventDefault(); confirmCondition(); }
-  }));
-  condModal.addEventListener('click', (e) => {
-    if (e.target === condModal) { // click backdrop to cancel
-      condState = null;
-      closeConditionModal();
-      cancelBcSelect();
-    }
   });
 
   canvas.addEventListener('pointerdown', onPointerDown);
@@ -1263,8 +1024,7 @@
      11. Init
      ============================================================ */
   updateSliderFill(cellSizeEl);
-  syncSolverButton();
+  syncStageNav();
   resize();
   loadDemo();
-  renderBcList();
 })(window);

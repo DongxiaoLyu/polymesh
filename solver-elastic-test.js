@@ -351,6 +351,44 @@ function maxNodalError(mesh, u, fcn) {
   console.log('OK: CG on a known 2×2 SPD system');
 }
 
+/* ---------- 7. Uniform pressure BC (pressureToTraction) ---------- */
+
+// pressureToTraction must turn a scalar boundary pressure into edge
+// tractions along the INWARD normal (p > 0 pushes into the domain). On
+// the right boundary (x = L) of the CCW unit square, inward = −x̂.
+{
+  const mesh = buildMesh([{ x: 0, y: 0 }, { x: 1, y: 0 }, { x: 1, y: 1 }, { x: 0, y: 1 }], 0.25);
+  const right = Mesh.boundaryEdges(mesh).filter(([a, b]) => {
+    const na = mesh.nodes[a], nb = mesh.nodes[b];
+    return Math.abs(na.x - 1) < 1e-9 && Math.abs(nb.x - 1) < 1e-9;
+  });
+  const group = { name: 'P', edges: right, p: 3 };
+  const traction = El.assembly.pressureToTraction(mesh, [group]);
+  assert(traction.length === right.length, 'pressureToTraction: one traction per pressure edge');
+  for (const t of traction) {
+    close(t.fx, -3, 1e-9, 'pressure pushes INTO the domain (−x̂ on right boundary)');
+    close(t.fy, 0, 1e-9, 'pressure is normal to the edge (no tangential part)');
+  }
+  console.log('OK: pressureToTraction — p>0 → inward-normal tractions on the right boundary');
+
+  // End-to-end: pin the left face, press the right face inward, and the
+  // body must compress (right-face nodes move −x).
+  const n = mesh.nodes.length;
+  const prescribed = {};
+  for (const [a, b] of Mesh.boundaryEdges(mesh)) {
+    for (const i of [a, b]) {
+      if (Math.abs(mesh.nodes[i].x) < 1e-9) { prescribed[i] = 0; prescribed[n + i] = 0; }
+    }
+  }
+  const { u } = El.assembly.solveElastic(mesh, {
+    E: 200000, nu: 0.3, prescribed, point: [], traction, body: null,
+  });
+  let rightUx = 0;
+  for (const [a, b] of right) for (const i of [a, b]) rightUx = Math.min(rightUx, u[i]);
+  assert(rightUx < -1e-9, 'inward pressure compresses the strip (right-face ux ' + rightUx.toExponential(2) + ')');
+  console.log('OK: inward pressure on right face compresses the body (max ux ' + rightUx.toExponential(2) + ')');
+}
+
 /* ---------- Summary ---------- */
 
 console.log('\n' + passed + ' passed, ' + failed + ' failed');
