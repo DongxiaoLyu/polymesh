@@ -212,40 +212,43 @@
   .legend-dot { border-radius: 50%; }
 
   /* ---------- Bottom pill (single element, two modes) ----------
-     Idle: the pill shows the hint TEXT on a DARK glass background. While a
-     drawing / BC selection session is active the SAME pill morphs into a
-     LIGHT pill with three flat symbol buttons (✓ confirm, ↩ undo, ✕ cancel)
-     — no text, no overlap possible. All buttons share one size and a flat
-     2D look: plain glyphs, subtle grey fill + hairline border, no primary
-     fill, no 3D. */
+     Idle: original LIGHT glass pill with the hint TEXT. While a drawing /
+     BC session is active the SAME pill shows three ICON-ONLY buttons
+     (flat stroke SVG lines: ✓ confirm, ↩ undo, ✕ cancel) — buttons are
+     TRANSPARENT (no inner borders/backgrounds, spacing kept via gaps) so
+     the pill does not look crowded. */
   .hint-bar {
     position: absolute; bottom: 16px; left: 50%; transform: translateX(-50%);
     display: flex; align-items: center; justify-content: center; gap: 6px;
-    min-height: 40px; max-width: calc(100% - 24px); box-sizing: border-box;
-    background: rgba(30, 30, 32, 0.9); color: #fff;
+    min-height: 38px; max-width: calc(100% - 24px); box-sizing: border-box;
+    background: var(--panel); backdrop-filter: var(--blur); -webkit-backdrop-filter: var(--blur);
+    color: var(--text);
     border-radius: 999px; box-shadow: var(--shadow);
-    padding: 4px 14px; z-index: 26; pointer-events: none;
-    transition: background .15s ease, padding .15s ease;
+    border: 1px solid rgba(255, 255, 255, 0.6);
+    padding: 4px 16px; z-index: 26; pointer-events: none;
   }
   .hint-bar.is-actions {
-    background: rgba(255, 255, 255, 0.97); color: var(--text);
-    border: 1px solid rgba(0, 0, 0, 0.08);
-    pointer-events: auto; padding: 4px 6px;
+    background: rgba(255, 255, 255, 0.96);
+    border-color: rgba(0, 0, 0, 0.06);
+    padding: 4px 8px; pointer-events: auto;
   }
   .pill-text { font-size: 12.5px; line-height: 1.35; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .pill-actions { display: none; align-items: center; gap: 6px; }
+  .pill-actions { display: none; align-items: center; gap: 2px; }
   .hint-bar.is-actions .pill-text { display: none; }
   .hint-bar.is-actions .pill-actions { display: flex; }
   .touch-btn {
-    display: grid; place-items: center; width: 40px; height: 34px;
-    background: rgba(0, 0, 0, 0.05);
-    border: 1px solid rgba(0, 0, 0, 0.12); border-radius: 8px;
-    color: #1d1d1f; font-size: 16px; line-height: 1; font-family: inherit;
+    display: grid; place-items: center; width: 42px; height: 34px;
+    background: transparent; border: none; color: #1d1d1f;
     cursor: pointer; padding: 0;
-    transition: background .12s ease, transform .05s ease;
+    transition: opacity .12s ease, transform .05s ease;
   }
-  .touch-btn:hover { background: rgba(0, 0, 0, 0.09); }
-  .touch-btn:active { transform: scale(0.93); }
+  .touch-btn svg {
+    width: 20px; height: 20px;
+    fill: none; stroke: currentColor; stroke-width: 1.8;
+    stroke-linecap: round; stroke-linejoin: round;
+  }
+  .touch-btn:hover { opacity: 0.75; }
+  .touch-btn:active { opacity: 0.5; transform: scale(0.9); }
 
   /* ---------- Toast ---------- */
   .toast {
@@ -549,9 +552,15 @@
     <div class="hint-bar" id="hintBar">
       <span class="pill-text" id="hintText">Click to place polygon vertices · double-click, Enter, or click the first point to close</span>
       <span class="pill-actions" id="touchActions" aria-live="polite">
-        <button id="btnTouchDone" class="touch-btn" aria-label="Confirm">✓</button>
-        <button id="btnTouchUndo" class="touch-btn" aria-label="Undo">↩</button>
-        <button id="btnTouchCancel" class="touch-btn" aria-label="Cancel">✕</button>
+        <button id="btnTouchDone" class="touch-btn" aria-label="Confirm">
+          <svg viewBox="0 0 24 24"><polyline points="5 13 10 18 19 7"/></svg>
+        </button>
+        <button id="btnTouchUndo" class="touch-btn" aria-label="Undo">
+          <svg viewBox="0 0 24 24"><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/></svg>
+        </button>
+        <button id="btnTouchCancel" class="touch-btn" aria-label="Cancel">
+          <svg viewBox="0 0 24 24"><path d="M18 6 6 18M6 6l12 12"/></svg>
+        </button>
       </span>
     </div>
 
